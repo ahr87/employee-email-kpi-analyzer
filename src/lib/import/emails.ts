@@ -18,7 +18,8 @@ export const emailFilterSchema = z.object({
   team: z.string().optional(),
   batchId: z.string().optional(),
   unmatched: z.coerce.boolean().optional(),
-  role: z.enum(["EMPLOYEE", "NMC"]).optional(),
+  /** counted = the emails that enter the KPI; followups / nmc = conversation evidence; all = everything */
+  view: z.enum(["counted", "followups", "nmc", "all"]).default("counted"),
   sort: z.enum(["sentAt", "subject", "confidence", "finalClass", "employee"]).default("sentAt"),
   dir: z.enum(["asc", "desc"]).default("desc"),
   page: z.coerce.number().int().min(1).default(1),
@@ -36,8 +37,11 @@ export function buildWhere(f: Partial<EmailFilter>): Prisma.EmailWhereInput {
   if (f.maxConfidence != null) and.push({ confidence: { lte: f.maxConfidence } });
   if (f.reviewStatus) and.push({ reviewStatus: f.reviewStatus });
   if (f.batchId) and.push({ batchId: f.batchId });
-  if (f.unmatched) and.push({ employeeId: null, role: "EMPLOYEE" });
-  and.push({ role: f.role ?? "EMPLOYEE" });
+  if (f.unmatched) and.push({ employeeId: null, counted: true });
+  const view = f.view ?? "counted";
+  if (view === "counted") and.push({ counted: true });
+  else if (view === "followups") and.push({ kind: "FOLLOW_UP" });
+  else if (view === "nmc") and.push({ kind: "NMC" });
   if (f.department) and.push({ employee: { is: { department: f.department } } });
   if (f.team) and.push({ employee: { is: { team: f.team } } });
   if (f.q?.trim()) {
@@ -60,7 +64,7 @@ export const emailSummarySelect = {
   id: true, year: true, month: true, subject: true, sentAt: true, senderName: true, senderEmail: true,
   finalClass: true, autoClass: true, confidence: true, reason: true, reviewStatus: true, reviewReasons: true,
   isManual: true, monthDecision: true, duplicateOfId: true, duplicateSimilarity: true, batchId: true, employeeId: true,
-  possibleDuplicateOfId: true, possibleDuplicateSim: true, role: true,
+  possibleDuplicateOfId: true, possibleDuplicateSim: true, duplicateReason: true, role: true, kind: true, counted: true, quoted: true, isForward: true, isReply: true,
   employee: { select: { id: true, name: true, email: true, department: true, team: true } },
   batch: { select: { number: true } },
   duplicateOf: { select: { id: true, subject: true, sentAt: true, employee: { select: { name: true } }, senderName: true } },
@@ -96,7 +100,7 @@ export async function getEmailDetail(id: string) {
     ? await prisma.email.findMany({
         where: { conversationKey: email.conversationKey, id: { not: id } },
         orderBy: { sentAt: "asc" },
-        select: { id: true, subject: true, sentAt: true, senderName: true, senderEmail: true, role: true, body: true, finalClass: true },
+        select: { id: true, subject: true, sentAt: true, senderName: true, senderEmail: true, role: true, kind: true, counted: true, quoted: true, isForward: true, isReply: true, body: true, finalClass: true },
         take: 50,
       })
     : [];
@@ -105,7 +109,7 @@ export async function getEmailDetail(id: string) {
 }
 
 export const emailAction = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("override"), classification: z.enum(CLASSES), reason: z.string().max(500).optional() }),
+  z.object({ action: z.literal("override"), classification: z.enum(CLASSES), reason: z.string().max(500).optional(), duplicateOfId: z.string().optional() }),
   z.object({ action: z.literal("approve") }),
   z.object({ action: z.literal("assignEmployee"), employeeId: z.string().nullable() }),
   z.object({ action: z.literal("monthDecision"), decision: z.enum(["INCLUDED", "EXCLUDED", "REVIEW"]) }),
@@ -120,16 +124,21 @@ export async function applyEmailAction(id: string, raw: unknown) {
 
   if (a.action === "override") {
     const changed = a.classification !== e.finalClass;
+    if (a.duplicateOfId && a.duplicateOfId === id) throw new Error("An email cannot be a duplicate of itself.");
+    if (a.duplicateOfId) await prisma.email.findUniqueOrThrow({ where: { id: a.duplicateOfId }, select: { id: true } });
     await prisma.email.update({
       where: { id },
       data: {
         finalClass: a.classification, isManual: true, overrideReason: a.reason || null, overrideAt: new Date(),
         reviewStatus: "REVIEWED",
+        ...(a.classification === "DUPLICATE" && a.duplicateOfId
+          ? { duplicateOfId: a.duplicateOfId, duplicateSimilarity: null, duplicateReason: "Original email selected manually." }
+          : {}),
       },
     });
     await logAudit(changed ? "CLASSIFICATION_CHANGED" : "CLASSIFICATION_APPROVED", "Email", id,
       changed ? `Classification changed ${e.finalClass} → ${a.classification}` : `Classification confirmed: ${a.classification}`,
-      { original: e.autoClass, previousFinal: e.finalClass, final: a.classification, reason: a.reason ?? null });
+      { original: e.autoClass, previousFinal: e.finalClass, final: a.classification, reason: a.reason ?? null, duplicateOfId: a.duplicateOfId ?? null });
   } else if (a.action === "approve") {
     await prisma.email.update({
       where: { id }, data: { isManual: true, overrideAt: new Date(), reviewStatus: "REVIEWED" },

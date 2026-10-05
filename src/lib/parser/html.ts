@@ -10,7 +10,8 @@ const ENTITIES: Record<string, string> = {
 };
 
 export function looksLikeHtml(text: string): boolean {
-  return /<(html|body|div|p|br|table|span|a|b|i|font|style|script)\b[^>]*>/i.test(text);
+  // a real tag: name followed by whitespace/attributes or ">" — NOT "<a@x.com>" style addresses
+  return /<\/?(html|body|div|p|br|table|tr|td|span|a|b|i|u|font|style|script|img)(\s[^<>]*)?\/?>/i.test(text);
 }
 
 export function decodeEntities(s: string): string {
@@ -25,6 +26,8 @@ export function decodeEntities(s: string): string {
 
 export function htmlToText(html: string): string {
   let t = html
+    // protect "Name <user@host>" addresses from the tag stripper
+    .replace(/<([^<>\s@]+@[^<>\s]+)>/g, "&lt;$1&gt;")
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/<(script|style|head|iframe|object|embed)\b[\s\S]*?<\/\1\s*>/gi, "")
     .replace(/<(script|style|iframe|object|embed)\b[^>]*>/gi, "")

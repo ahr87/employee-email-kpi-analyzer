@@ -13,6 +13,7 @@ export type ReviewReason =
   | "LOW_CONFIDENCE"
   | "UNMATCHED_EMPLOYEE"
   | "DATE_INVALID"
+  | "DATE_AMBIGUOUS"
   | "OUTSIDE_MONTH"
   | "UNCERTAIN_DUPLICATE"
   | "AMBIGUOUS"
@@ -23,6 +24,7 @@ export const REVIEW_REASON_LABELS: Record<ReviewReason, string> = {
   LOW_CONFIDENCE: "Confidence below threshold",
   UNMATCHED_EMPLOYEE: "Sender not matched to an employee",
   DATE_INVALID: "Date missing or invalid",
+  DATE_AMBIGUOUS: "Day/month order unclear — could fall in another month",
   OUTSIDE_MONTH: "Date outside selected month",
   UNCERTAIN_DUPLICATE: "Possible duplicate (uncertain)",
   AMBIGUOUS: "Ambiguous evidence",

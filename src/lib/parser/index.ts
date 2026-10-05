@@ -1,59 +1,108 @@
 import { decodeEntities, htmlToText, looksLikeHtml } from "./html";
-import { normalizeDigits, parseDate } from "./dates";
+import { parseDateDetailed } from "./dates";
+import { normalizeForAnalysis, parseView } from "../text";
 import type { ParsedEmail, ParseOptions, ParseResult } from "./types";
 
 export type { ParsedEmail, ParseResult, ParseOptions } from "./types";
-export { parseDate } from "./dates";
+export { parseDate, parseDateDetailed } from "./dates";
 
-type HeaderKey = "from" | "sent" | "to" | "cc" | "subject" | "messageId";
+type HeaderKey = "from" | "sent" | "to" | "cc" | "subject" | "messageId" | "ignore";
 
-// English + Arabic (Outlook Arabic UI) header labels.
+/**
+ * Header labels (English + Arabic). Matching is done on normalised text, so Arabic letter variants
+ * (إ/أ/ا, ى/ي, ة/ه) and bidi marks do not matter. "ignore" labels are consumed but not stored.
+ */
 const LABELS: Record<HeaderKey, string[]> = {
-  from: ["from", "sender", "من"],
-  sent: ["sent", "date", "received", "sent on", "تم الإرسال", "تم الارسال", "تاريخ الإرسال", "التاريخ", "تاريخ"],
-  to: ["to", "إلى", "الى", "إلي"],
-  cc: ["cc", "نسخة", "نسخة إلى", "نسخة الى"],
+  from: ["from", "sender", "من", "المرسل"],
+  sent: ["sent", "date", "received", "sent on", "sent date", "تم الإرسال", "تاريخ الإرسال", "التاريخ", "تاريخ", "أرسلت", "تم الارسال"],
+  to: ["to", "إلى", "الى", "إلي", "الي"],
+  cc: ["cc", "نسخة", "نسخة إلى", "نسخة الى", "نسخه"],
   subject: ["subject", "الموضوع", "موضوع"],
   messageId: ["message-id", "message id"],
+  ignore: ["importance", "priority", "sensitivity", "attachments", "attachment", "categories", "bcc", "reply-to", "الأهمية", "الاهمية", "أهمية", "المرفقات", "مرفقات", "نسخة مخفية", "when", "where"],
 };
 const LABEL_LOOKUP = new Map<string, HeaderKey>();
-for (const [k, arr] of Object.entries(LABELS)) for (const l of arr) LABEL_LOOKUP.set(l.toLowerCase(), k as HeaderKey);
+for (const [k, arr] of Object.entries(LABELS)) for (const l of arr) LABEL_LOOKUP.set(normalizeForAnalysis(l), k as HeaderKey);
 
-const HEADER_RE = /^[\s>*]*([^\s:：][^:：]{0,24}?)\s*[:：]\s*(.*)$/;
+const HEADER_RE = /^[\s>*_]*([^\s:：][^:：]{0,24}?)[\s*_]*[:：][\s*_]*(.*)$/;
 const QUOTE_MARKER_RE =
-  /^\s*(-{2,}\s*(original message|forwarded message|الرسالة الأصلية|رسالة معاد توجيهها)[^\n]*|_{5,}|begin forwarded message:?|on .{5,120} wrote:|>.*)\s*$/i;
+  /^\s*(-{2,}\s*(original message|forwarded message|الرسالة الأصلية|رسالة معاد توجيهها|الرسالة المعاد توجيهها)[^\n]*|-{5,}\s*forwarded message\s*-{5,}|_{5,}|begin forwarded message:?|on .{5,140} wrote:|في .{5,140} كتب:?)\s*$/i;
 const HARD_SEP_RE = /^\s*([=#*~]{5,}|-{5,}\s*(email|message)\s*#?\d+\s*-{5,}|-{3,}\s*next email\s*-{3,})\s*$/i;
 const EMAIL_RE = /[A-Z0-9._%+'-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+const INVISIBLE = /[​-‏‪-‮⁦-⁩﻿]/g;
+const clean = (s: string) => s.replace(INVISIBLE, "").trim();
 
-function headerOf(line: string): { key: HeaderKey; value: string } | null {
-  const m = HEADER_RE.exec(line);
+interface Header { key: HeaderKey; valueView: string; valueRaw: string }
+
+function headerOf(rawLine: string, viewLine: string): Header | null {
+  const m = HEADER_RE.exec(viewLine);
   if (!m) return null;
-  const key = LABEL_LOOKUP.get(m[1].trim().toLowerCase());
-  return key ? { key, value: m[2].trim() } : null;
+  const key = LABEL_LOOKUP.get(normalizeForAnalysis(m[1]));
+  if (!key) return null;
+  const n = m[2].length;
+  return { key, valueView: m[2].trim(), valueRaw: rawLine.slice(rawLine.length - n).trim() };
 }
 
-function isQuoted(lines: string[], idx: number): boolean {
-  if (/^\s*>/.test(lines[idx])) return true;
+interface Block {
+  start: number;
+  end: number; // first line after the header block
+  fields: Partial<Record<HeaderKey, { view: string; raw: string }>>;
+  quoted: boolean;
+}
+
+function readHeader(raw: string[], view: string[], start: number): Omit<Block, "quoted"> | null {
+  const fields: Block["fields"] = {};
+  let i = start;
+  let pending: HeaderKey | null = null;
+  let last: HeaderKey | null = null;
+  let seen = 0;
+  let end = start;
+  while (i < raw.length) {
+    const line = view[i];
+    if (!line.trim()) {
+      // tolerate blank lines inside a header block (rich-text pastes) if another header label follows
+      let j = i + 1;
+      while (j < raw.length && !view[j].trim()) j++;
+      const nxt = j < raw.length ? headerOf(raw[j], view[j]) : null;
+      if (pending || (nxt && (nxt.key === "ignore" || !(nxt.key in fields)) && seen > 0 && nxt.key !== "from")) { i = j; continue; }
+      break;
+    }
+    const h = headerOf(raw[i], line);
+    if (h && (h.key === "ignore" || !(h.key in fields))) {
+      seen++;
+      if (h.key !== "ignore") fields[h.key] = { view: h.valueView, raw: h.valueRaw };
+      pending = h.valueView ? null : h.key;
+      last = h.key;
+      i++; end = i;
+      continue;
+    }
+    if (pending && pending !== "ignore") { // value on the line after the label
+      fields[pending] = { view: line.trim(), raw: raw[i].trim() };
+      last = pending; pending = null; i++; end = i;
+      continue;
+    }
+    if (pending === "ignore") { pending = null; i++; end = i; continue; }
+    if (last && (last === "to" || last === "cc") && !h && fields[last] && (EMAIL_RE.test(line) || /[;,؛]\s*$/.test(view[i - 1] ?? ""))) {
+      fields[last]!.view += " " + line.trim(); fields[last]!.raw += " " + raw[i].trim();
+      i++; end = i;
+      continue;
+    }
+    break;
+  }
+  const keys = Object.keys(fields);
+  if (!fields.from || !keys.some((k) => k !== "from")) return null;
+  return { start, end, fields };
+}
+
+function isQuotedStart(raw: string[], idx: number): boolean {
+  if (/^\s*>/.test(raw[idx])) return true;
   let seen = 0;
   for (let i = idx - 1; i >= 0 && seen < 3; i--) {
-    if (!lines[i].trim()) continue;
+    if (!raw[i].trim()) continue;
     seen++;
-    if (QUOTE_MARKER_RE.test(lines[i])) return true;
+    if (QUOTE_MARKER_RE.test(parseView(raw[i]))) return true;
   }
   return false;
-}
-
-/** A "From:" line starts a header block only if other header labels follow closely. */
-function startsHeaderBlock(lines: string[], idx: number): boolean {
-  const h = headerOf(lines[idx]);
-  if (!h || h.key !== "from") return false;
-  let others = 0;
-  for (let i = idx + 1; i < Math.min(lines.length, idx + 10); i++) {
-    if (!lines[i].trim()) break;
-    const o = headerOf(lines[i]);
-    if (o && o.key !== "from") others++;
-  }
-  return others >= 1;
 }
 
 export function splitAddressList(value: string): string[] {
@@ -63,7 +112,7 @@ export function splitAddressList(value: string): string[] {
   for (const ch of value) {
     if (ch === "<" || ch === "[" || ch === "(") depth++;
     if (ch === ">" || ch === "]" || ch === ")") depth = Math.max(0, depth - 1);
-    if ((ch === ";" || ch === "," || ch === "؛") && depth === 0) {
+    if ((ch === ";" || ch === "," || ch === "؛" || ch === "،") && depth === 0) {
       if (cur.trim()) out.push(cur.trim());
       cur = "";
     } else cur += ch;
@@ -73,72 +122,66 @@ export function splitAddressList(value: string): string[] {
 }
 
 export function parseAddress(value: string): { name: string; email: string } {
-  const v = decodeEntities(value).replace(/mailto:/gi, "").trim();
+  const v = decodeEntities(clean(value)).replace(/mailto:/gi, "").trim();
   const em = EMAIL_RE.exec(v);
   const email = em ? em[0].toLowerCase() : "";
   let name = v
     .replace(/[<\[(]\s*[^<>\[\]()]*@[^<>\[\]()]*[>\])]/g, "")
     .replace(EMAIL_RE, "")
     .replace(/^["'\s]+|["'\s]+$/g, "")
+    .replace(/\s+/g, " ")
     .trim();
   if (/^\/o=/i.test(name) || /^\/o=/i.test(v)) name = ""; // Exchange DN, not useful
   return { name, email };
 }
 
-function cleanSubjectPrefix(subject: string) {
-  const isForward = /^\s*((fw|fwd)\s*:|إعادة توجيه\s*:|احالة\s*:)/i.test(subject);
-  const isReply = /^\s*(re\s*:|رد\s*:|ردّ\s*:)/i.test(subject);
-  return { isForward, isReply };
+const FWD_PREFIX = /^\s*((fw|fwd|forward)\s*(\[\d+\])?\s*:|إعادة توجيه\s*:|اعادة توجيه\s*:|احالة\s*:|إحالة\s*:|تحويل\s*:|محول\s*:)/i;
+const RE_PREFIX = /^\s*((re|aw|sv)\s*(\[\d+\])?\s*:|رد\s*:|ردّ\s*:|الرد\s*:)/i;
+
+function prefixFlags(subject: string) {
+  return { isForward: FWD_PREFIX.test(subject), isReply: RE_PREFIX.test(subject) };
 }
 
-function parseSegment(rawLines: string[], opts: ParseOptions): ParsedEmail {
-  const rawSource = rawLines.join("\n").trim();
-  const fields: Partial<Record<HeaderKey, string>> = {};
-  let i = 0;
-  while (i < rawLines.length && !rawLines[i].trim()) i++;
-  let last: HeaderKey | null = null;
-  for (; i < rawLines.length; i++) {
-    const line = rawLines[i];
-    if (!line.trim()) break;
-    const h = headerOf(line);
-    if (h && !(h.key in fields)) {
-      fields[h.key] = h.value;
-      last = h.key;
-    } else if (last && (last === "to" || last === "cc") && !h && (EMAIL_RE.test(line) || /;\s*$/.test(rawLines[i - 1] ?? ""))) {
-      fields[last] += " " + line.trim(); // wrapped recipient list
-    } else if (last === "subject" && !h && false) {
-      fields.subject += " " + line.trim();
-    } else break;
-  }
-  const body = rawLines.slice(i).join("\n").replace(/^\s*\n/, "").trim();
+function formatList(value: string): string[] {
+  return splitAddressList(value).map((part) => {
+    const a = parseAddress(part);
+    return a.email ? (a.name ? `${a.name} <${a.email}>` : a.email) : a.name || clean(part);
+  }).filter(Boolean);
+}
 
+function buildEmail(block: Block, bodyRaw: string[], rawSource: string, opts: ParseOptions): ParsedEmail {
+  const f = block.fields;
   const uncertain: string[] = [];
-  const sender = fields.from ? parseAddress(fields.from) : { name: "", email: "" };
-  if (!fields.from) uncertain.push("sender");
+  const sender = f.from ? parseAddress(f.from.raw) : { name: "", email: "" };
+  if (!f.from || !f.from.view) uncertain.push("sender");
   if (!sender.email) uncertain.push("senderEmail");
-
-  const subject = decodeEntities(fields.subject ?? "").trim();
+  const subject = decodeEntities(clean(f.subject?.raw ?? "")).replace(/\s+/g, " ");
   if (!subject) uncertain.push("subject");
 
   let sentAt: Date | null = null;
-  if (fields.sent) sentAt = parseDate(fields.sent, opts.dateOrder ?? "DMY");
+  let alt: Date | null = null;
+  let evidence: "DMY" | "MDY" | null = null;
+  if (f.sent?.view) {
+    const r = parseDateDetailed(f.sent.view, opts.dateOrder ?? "DMY");
+    sentAt = r.date; alt = r.alt; evidence = r.evidence ?? null;
+  }
   if (!sentAt) uncertain.push("sentAt");
 
-  const mid = fields.messageId?.match(/<[^>]+>/)?.[0] ?? rawSource.match(/^\s*Message-ID:\s*(<[^>]+>)/im)?.[1] ?? null;
-  const { isForward, isReply } = cleanSubjectPrefix(subject);
-
+  const mid = f.messageId?.view.match(/<[^>]+>/)?.[0] ?? rawSource.match(/^\s*Message-ID:\s*(<[^>]+>)/im)?.[1] ?? null;
   return {
-    senderName: sender.name || (sender.email ? "" : decodeEntities(fields.from ?? "").trim()),
+    senderName: sender.name || (sender.email ? "" : decodeEntities(clean(f.from?.raw ?? ""))),
     senderEmail: sender.email,
-    to: fields.to ? splitAddressList(fields.to) : [],
-    cc: fields.cc ? splitAddressList(fields.cc) : [],
+    to: f.to?.raw ? formatList(f.to.raw) : [],
+    cc: f.cc?.raw ? formatList(f.cc.raw) : [],
     subject,
     sentAt,
-    body,
+    sentAtAlt: alt,
+    dateOrderEvidence: evidence,
+    body: bodyRaw.join("\n").trim(),
     rawSource,
     messageId: mid,
-    isForward,
-    isReply,
+    quoted: block.quoted,
+    ...prefixFlags(subject),
     uncertainFields: uncertain,
   };
 }
@@ -150,61 +193,69 @@ function parseListRows(lines: string[], opts: ParseOptions): ParsedEmail[] | nul
   const out: ParsedEmail[] = [];
   for (const r of rows) {
     const cols = r.split("\t").map((c) => c.trim());
-    const dateIdx = cols.findIndex((c) => parseDate(c, opts.dateOrder ?? "DMY"));
+    const dateIdx = cols.findIndex((c) => parseDateDetailed(c, opts.dateOrder ?? "DMY").date);
     if (dateIdx < 0) return null;
     const rest = cols.filter((_, i) => i !== dateIdx);
     const sender = parseAddress(rest[0]);
-    const subject = rest[1] ?? "";
+    const subject = clean(rest[1] ?? "");
+    const d = parseDateDetailed(cols[dateIdx], opts.dateOrder ?? "DMY");
     out.push({
       senderName: sender.name, senderEmail: sender.email, to: [], cc: [], subject,
-      sentAt: parseDate(cols[dateIdx], opts.dateOrder ?? "DMY"), body: rest.slice(2).join(" "),
-      rawSource: r, messageId: null, ...cleanSubjectPrefix(subject),
+      sentAt: d.date, sentAtAlt: d.alt, dateOrderEvidence: d.evidence ?? null, quoted: false, body: rest.slice(2).join(" "),
+      rawSource: r, messageId: null, ...prefixFlags(subject),
       uncertainFields: ["to", ...(sender.email ? [] : ["senderEmail"])],
     });
   }
   return out;
 }
 
+/** Lines that only introduce quoted content and belong to neither message body. */
+const isTrailer = (raw: string) => {
+  const v = parseView(raw);
+  return !v.trim() || QUOTE_MARKER_RE.test(v) || HARD_SEP_RE.test(v) || /^\s*[-_=*]{3,}\s*$/.test(v);
+};
+
+/**
+ * Parses text copied from Outlook (plain text, rich text or HTML) into individual messages.
+ * Every header block (From / Sent / To / Cc / Subject) becomes its own message, so reply/forward chains
+ * are split into the original, replies and forwards; messages found below another one are flagged `quoted`.
+ * Header detection runs on a normalised view; stored bodies and raw sources keep the pasted characters.
+ */
 export function parseEmails(input: string, opts: ParseOptions = {}): ParseResult {
   const warnings: string[] = [];
-  let text = (input ?? "").replace(/\r\n?/g, "\n").replace(/ /g, " ");
+  let text = (input ?? "").replace(/\r\n?/g, "\n");
   if (!text.trim()) return { emails: [], warnings: ["Nothing to parse: the pasted text is empty."] };
 
   if (looksLikeHtml(text)) {
     text = htmlToText(text);
-    warnings.push("Pasted content contained HTML; it was converted to safe plain text.");
+    warnings.push("Pasted content contained HTML; it was converted to safe plain text (scripts and styles removed).");
   }
-  text = normalizeDigits(text);
-  const lines = text.split("\n");
+  const raw = text.split("\n");
+  const view = raw.map(parseView);
 
-  // find boundaries
-  const starts: number[] = [];
-  const hardSeps = new Set<number>();
-  lines.forEach((line, idx) => {
-    if (HARD_SEP_RE.test(line)) hardSeps.add(idx);
-  });
-  for (let idx = 0; idx < lines.length; idx++) {
-    if (!startsHeaderBlock(lines, idx)) continue;
-    const afterHardSep = (() => {
-      for (let j = idx - 1; j >= 0; j--) {
-        if (!lines[j].trim()) continue;
-        return hardSeps.has(j);
+  // locate header blocks
+  const blocks: Block[] = [];
+  for (let i = 0; i < raw.length; ) {
+    const h = headerOf(raw[i], view[i]);
+    if (h && h.key === "from") {
+      const b = readHeader(raw, view, i);
+      if (b) {
+        blocks.push({ ...b, quoted: blocks.length > 0 && isQuotedStart(raw, i) });
+        i = b.end;
+        continue;
       }
-      return false;
-    })();
-    if (starts.length === 0 || afterHardSep || !isQuoted(lines, idx)) starts.push(idx);
+    }
+    i++;
   }
 
-  if (starts.length === 0) {
-    const rows = parseListRows(lines, opts);
+  if (blocks.length === 0) {
+    const rows = parseListRows(raw, opts);
     if (rows) return { emails: rows, warnings };
-    warnings.push(
-      "No email headers (From:/Sent:/Subject:) were found. The whole paste was imported as one email with uncertain fields.",
-    );
-    const firstLine = lines.find((l) => l.trim())?.trim() ?? "";
+    warnings.push("No email headers (From: / Sent: / Subject:) were found. The whole paste was imported as ONE email with uncertain fields — please check it in Review.");
+    const firstLine = raw.find((l) => l.trim())?.trim() ?? "";
     return {
       emails: [{
-        senderName: "", senderEmail: "", to: [], cc: [], subject: firstLine.slice(0, 200), sentAt: null,
+        senderName: "", senderEmail: "", to: [], cc: [], subject: clean(firstLine).slice(0, 200), sentAt: null, sentAtAlt: null, dateOrderEvidence: null, quoted: false,
         body: text.trim(), rawSource: text.trim(), messageId: null, isForward: false, isReply: false,
         uncertainFields: ["sender", "senderEmail", "subject", "sentAt", "to"],
       }],
@@ -212,15 +263,21 @@ export function parseEmails(input: string, opts: ParseOptions = {}): ParseResult
     };
   }
 
-  if (lines.slice(0, starts[0]).some((l) => l.trim() && !HARD_SEP_RE.test(l))) {
+  if (raw.slice(0, blocks[0].start).some((l) => l.trim() && !isTrailer(l))) {
     warnings.push("Text before the first email header was ignored.");
   }
 
   const emails: ParsedEmail[] = [];
-  starts.forEach((s, n) => {
-    const end = n + 1 < starts.length ? starts[n + 1] : lines.length;
-    const seg = lines.slice(s, end).filter((_, k) => !hardSeps.has(s + k));
-    emails.push(parseSegment(seg, opts));
+  blocks.forEach((b, n) => {
+    const stop = n + 1 < blocks.length ? blocks[n + 1].start : raw.length;
+    let body = raw.slice(b.end, stop).filter((l) => !HARD_SEP_RE.test(parseView(l)));
+    while (body.length && isTrailer(body[body.length - 1])) body.pop();
+    if (b.quoted && body.length && body.filter((l) => /^\s*>/.test(l)).length >= body.length / 2) {
+      body = body.map((l) => l.replace(/^[\s>]*/, ""));
+    }
+    emails.push(buildEmail(b, body, raw.slice(b.start, stop).join("\n").trim(), opts));
   });
+  const quotedCount = emails.filter((e) => e.quoted).length;
+  if (quotedCount) warnings.push(`${quotedCount} message(s) were found inside reply/forward chains and were split out as separate messages.`);
   return { emails, warnings };
 }

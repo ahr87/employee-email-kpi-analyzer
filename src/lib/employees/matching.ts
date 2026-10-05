@@ -28,15 +28,18 @@ export function matchEmployee<T extends MatchableEmployee>(
   return { employee: null, by: null };
 }
 
-/** True when the address belongs to NMC staff (exact address, "@domain" or bare domain entries). */
-export function isNmcAddress(email: string, nmcAddresses: string[]): boolean {
+export interface NmcAddressLike { address: string; enabled?: boolean }
+
+/** True when the address belongs to NMC staff (enabled entries only: exact address or "@domain"/bare domain). */
+export function isNmcAddress(email: string, nmcAddresses: (string | NmcAddressLike)[]): boolean {
   const e = email.trim().toLowerCase();
   if (!e) return false;
-  return nmcAddresses.some((raw) => {
-    const a = raw.trim().toLowerCase();
+  return nmcAddresses.some((entry) => {
+    const o = typeof entry === "string" ? { address: entry, enabled: true } : entry;
+    if (o.enabled === false) return false;
+    const a = o.address.trim().toLowerCase();
     if (!a) return false;
     if (a.includes("@") && !a.startsWith("@")) return a === e;
-    const domain = a.replace(/^@/, "");
-    return e.endsWith("@" + domain);
+    return e.endsWith("@" + a.replace(/^@/, ""));
   });
 }

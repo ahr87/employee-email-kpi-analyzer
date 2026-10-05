@@ -58,6 +58,7 @@ model Email {
   ccRecipients String   @default("")
   subject      String   @default("")
   sentAt       DateTime? // naive wall-clock time stored as UTC
+  sentAtAlt    DateTime? // the other reading of an ambiguous numeric date (day/month swapped), if it differs
   body         String   @default("")
   rawSource    String   @default("") // exact pasted text for traceability
   messageId    String?
@@ -72,6 +73,13 @@ model Email {
   serviceIds  String @default("")
   circuitIds  String @default("")
   locations   String @default("")
+  ipAddresses String @default("")
+  devices     String @default("")
+
+  // conversation structure (derived by analysis)
+  quoted    Boolean @default(false) // extracted from a quoted / forwarded section of a longer paste
+  kind      String  @default("REPORT") // REPORT | FOLLOW_UP | NMC — only REPORT emails are counted in the KPI
+  counted   Boolean @default(true)
 
   // month handling
   outsideMonth  Boolean @default(false)
@@ -113,6 +121,7 @@ model Email {
   @@index([conversationKey])
   @@index([finalClass])
   @@index([sentAt])
+  @@index([counted])
 }
 
 model AuditLog {

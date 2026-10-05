@@ -25,14 +25,14 @@ export interface MonthlyStats {
 /** Aggregates FINAL classifications for one month; KPI is computed by the separate KPI engine. */
 export async function monthlyStats(year: number, month: number): Promise<MonthlyStats> {
   const settings = await getSettings();
-  const base = { year, month, role: "EMPLOYEE", monthDecision: { in: COUNTED } };
+  const base = { year, month, counted: true, monthDecision: { in: COUNTED } };
   const [grouped, employees, unmatched, needsReview, outside, nmc] = await Promise.all([
     prisma.email.groupBy({ by: ["employeeId", "finalClass"], where: base, _count: true }),
     prisma.employee.findMany({ orderBy: { name: "asc" } }),
     prisma.email.count({ where: { ...base, employeeId: null } }),
-    prisma.email.count({ where: { year, month, role: "EMPLOYEE", reviewStatus: "NEEDS_REVIEW", monthDecision: { not: "EXCLUDED" } } }),
-    prisma.email.count({ where: { year, month, role: "EMPLOYEE", monthDecision: "REVIEW" } }),
-    prisma.email.count({ where: { year, month, role: "NMC" } }),
+    prisma.email.count({ where: { year, month, counted: true, reviewStatus: "NEEDS_REVIEW", monthDecision: { not: "EXCLUDED" } } }),
+    prisma.email.count({ where: { year, month, counted: true, monthDecision: "REVIEW" } }),
+    prisma.email.count({ where: { year, month, kind: "NMC" } }),
   ]);
   const byEmp = new Map<string, ClassCounts>();
   const totals = emptyCounts();
@@ -65,7 +65,7 @@ export async function monthsWithData() {
 export async function trend(year: number, employeeId?: string) {
   const grouped = await prisma.email.groupBy({
     by: ["month", "finalClass"],
-    where: { year, role: "EMPLOYEE", monthDecision: { in: COUNTED }, ...(employeeId ? { employeeId } : {}) },
+    where: { year, counted: true, monthDecision: { in: COUNTED }, ...(employeeId ? { employeeId } : {}) },
     _count: true,
   });
   const settings = await getSettings();

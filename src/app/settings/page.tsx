@@ -48,7 +48,7 @@ export default function SettingsPage() {
             <Input type="number" value={s.defaultMonth?.year ?? new Date().getFullYear()} disabled={!s.defaultMonth} onChange={(e) => setS({ ...s, defaultMonth: { year: Number(e.target.value), month: s.defaultMonth?.month ?? 1 } })} className="w-28" />
           </div>
         </Field>
-        <Field label="Numeric date order in pasted emails" hint="How 03/04/2026 is read."><Select value={s.dateOrder} onChange={(e) => setS({ ...s, dateOrder: e.target.value as "DMY" | "MDY" })}><option value="DMY">Day / Month / Year</option><option value="MDY">Month / Day / Year</option></Select></Field>
+        <Field label="Numeric date order in pasted emails" hint={s.dateOrderLearned ? "Verified automatically from your pasted dates." : "How 03/04/2026 is read. Becomes verified automatically once a pasted date proves the order (e.g. 25/04)."}><Select value={s.dateOrder} onChange={(e) => setS({ ...s, dateOrder: e.target.value as "DMY" | "MDY" })}><option value="DMY">Day / Month / Year</option><option value="MDY">Month / Day / Year</option></Select></Field>
       </div></Card>
 
       <Card><CardHeader title="Classification" /><div className="grid gap-4 p-4 md:grid-cols-2">

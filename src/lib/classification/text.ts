@@ -14,3 +14,9 @@ export function stripQuoted(body: string): string {
   const idx = body.search(/^\s*(-{2,}\s*original message|_{5,}\s*$|from:\s.+\n\s*sent:)/im);
   return idx > 0 ? body.slice(0, idx) : body;
 }
+
+/** Body without the closing signature / disclaimer, so names, company and job titles never act as "locations". */
+export function stripSignature(body: string): string {
+  const m = body.match(/^[ \t>]*(best regards|kind regards|warm regards|with regards|regards|thanks and regards|thanks|thank you|sincerely|cheers|مع التحية|مع تحياتي|تحياتي|وتفضلوا|شكرا|شكراً|--+\s*$|sent from my)\b.*$/im);
+  return m && m.index !== undefined && m.index > 0 ? body.slice(0, m.index) : body;
+}
