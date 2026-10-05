@@ -1,0 +1,24 @@
+node_modules
+.next
+out
+coverage
+*.tsbuildinfo
+next-env.d.ts
+
+# environment & secrets
+.env
+.env.*
+!.env.example
+
+# local databases (may contain company / personal data)
+*.db
+*.db-journal
+data/
+prisma/*.db
+
+# generated
+src/generated
+
+# misc
+.DS_Store
+npm-debug.log*

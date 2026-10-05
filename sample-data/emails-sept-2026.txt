@@ -1,0 +1,82 @@
+SYNTHETIC DEMO DATA - fictional people and content only.
+
+From: Alice Morgan <alice.morgan@acme.test>
+Sent: Tuesday, September 1, 2026 10:05 AM
+To: NMC Desk <nmc@acme.test>
+Cc: Support Lead <support.lead@acme.test>
+Subject: BB outage at Mansour
+
+Customers at Mansour lost their BB connection. Circuit CKT-48213 shows red.
+Please check urgently.
+
+From: NMC Desk <nmc@acme.test>
+Sent: Tuesday, September 1, 2026 10:12 AM
+To: NOC Operations <noc-operations@acme.test>
+Subject: FW: BB outage at Mansour
+
+Escalated to NOC operations team. Ticket INC700123 has been created. Kindly check.
+
+From: Bilal Karim <bilal.karim@acme.test>
+Sent: Tuesday, September 1, 2026 10:12 AM
+To: NMC Desk <nmc@acme.test>
+Subject: Mansour BB connection is down
+
+BB link down in Mansour area since this morning, several customers are calling.
+
+From: Carla Ng <carla.ng@acme.test>
+Sent: Thursday, September 3, 2026 9:30 AM
+To: NMC Desk <nmc@acme.test>
+Subject: Question about monthly report format
+
+Is the monthly report layout changing next quarter?
+
+From: NMC Desk <nmc@acme.test>
+Sent: Thursday, September 3, 2026 9:45 AM
+To: Carla Ng <carla.ng@acme.test>
+Subject: RE: Question about monthly report format
+
+Hello Carla, no action required from NMC. This is a known issue and not related to the network.
+
+From: Dev Patel <dev.patel@acme.test>
+Sent: Friday, September 4, 2026 2:10 PM
+To: NMC Desk <nmc@acme.test>
+Subject: Router reboot needed
+
+Customer router needs a reboot, please advise.
+
+From: Zed Outsider <zed@other.test>
+Sent: Friday, September 4, 2026 3:00 PM
+To: NMC Desk <nmc@acme.test>
+Subject: Fiber cut near Karrada
+
+Fiber cable cut near Karrada junction.
+
+From: Eva Lind <eva.lind@acme.test>
+Sent: Saturday, September 5, 2026 11:20 AM
+To: NMC Desk <nmc@acme.test>
+Subject: Slow internet at Karrada branch
+
+Internet is very slow at the Karrada branch, service id SVC-90017.
+
+From: NMC Desk <nmc@acme.test>
+Sent: Saturday, September 5, 2026 11:40 AM
+To: Support Team <support-team@acme.test>
+Subject: FW: Slow internet at Karrada branch
+
+Forwarded to the support team for follow up. Please action.
+
+From: Dev Patel <dev.patel@acme.test>
+Sent: Sunday, August 30, 2026 4:00 PM
+To: NMC Desk <nmc@acme.test>
+Subject: Cable fault at Zayouna site
+
+This email is dated in August on purpose (outside the selected month).
+
+From: Alice Morgan <alice.morgan@acme.test>
+Sent: Tuesday, September 1, 2026 10:05 AM
+To: NMC Desk <nmc@acme.test>
+Cc: Support Lead <support.lead@acme.test>
+Subject: BB outage at Mansour
+
+Customers at Mansour lost their BB connection. Circuit CKT-48213 shows red.
+Please check urgently.
