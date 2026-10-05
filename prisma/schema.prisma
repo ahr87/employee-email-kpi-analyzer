@@ -63,6 +63,7 @@ model Email {
   rawSource    String   @default("") // exact pasted text for traceability
   messageId    String?
   contentHash  String   @unique
+  looseHash   String   @default("") // sender + minute + conversation (no body): recognises quoted copies of the same email
   conversationKey String @default("")
   isForward    Boolean  @default(false)
   isReply      Boolean  @default(false)
@@ -119,6 +120,7 @@ model Email {
   @@index([employeeId])
   @@index([batchId])
   @@index([conversationKey])
+  @@index([looseHash])
   @@index([finalClass])
   @@index([sentAt])
   @@index([counted])

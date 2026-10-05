@@ -1,7 +1,7 @@
 import { handle } from "@/lib/api";
 import { prisma } from "@/lib/database/client";
 export const GET = (req: Request) =>
-  handle(async () => {
+  handle(req, async () => {
     const u = new URL(req.url).searchParams;
     const year = Number(u.get("year")), month = Number(u.get("month"));
     const batches = await prisma.batch.findMany({

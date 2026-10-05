@@ -4,9 +4,9 @@
   "private": true,
   "description": "Local tool that analyzes pasted Outlook emails and produces monthly employee email KPI reports. No Outlook connection.",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "prisma generate && next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1",
     "postinstall": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "tsx scripts/seed-demo.ts",

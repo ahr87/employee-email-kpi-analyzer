@@ -6,12 +6,12 @@ export default defineConfig({
   timeout: 60_000,
   workers: 1,
   use: {
-    baseURL: "http://localhost:3200",
+    baseURL: "http://127.0.0.1:3200",
     launchOptions: process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},
   },
   webServer: {
-    command: "rm -f data/e2e.db && npx prisma db push && npx next start -p 3200",
-    url: "http://localhost:3200/api/months",
+    command: "rm -f data/e2e.db && npx prisma db push && npx next start -H 127.0.0.1 -p 3200",
+    url: "http://127.0.0.1:3200/api/months",
     env: { DATABASE_URL: "file:./data/e2e.db" },
     reuseExistingServer: false,
     timeout: 120_000,

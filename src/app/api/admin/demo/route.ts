@@ -1,3 +1,3 @@
 import { handle } from "@/lib/api";
 import { loadDemoData } from "@/lib/demo";
-export const POST = () => handle(loadDemoData);
+export const POST = (req: Request) => handle(req, loadDemoData);

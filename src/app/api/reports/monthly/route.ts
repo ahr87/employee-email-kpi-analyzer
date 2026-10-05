@@ -3,7 +3,7 @@ import { monthlyStats } from "@/lib/reports/aggregate";
 import { monthlyCsv, monthlyXlsx } from "@/lib/reports/excel";
 import { MONTH_NAMES } from "@/lib/types";
 export const GET = (req: Request) =>
-  handle(async () => {
+  handle(req, async () => {
     const { year, month, params } = ym(req);
     const format = params.get("format") ?? "json";
     const name = `email-kpi-${year}-${String(month).padStart(2, "0")}-${MONTH_NAMES[month - 1].toLowerCase()}`;

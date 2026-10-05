@@ -4,10 +4,11 @@ import { getSettings, saveSettings } from "../settings";
 import { logAudit } from "../audit";
 import { parseEmails, type ParsedEmail } from "../parser";
 import { extractEntities } from "../classification/entities";
-import { conversationKey } from "../classification/text";
+import { conversationKey, stripSignature } from "../classification/text";
 import { isNmcAddress, matchEmployee } from "../employees/matching";
 import { analyzeMonth } from "./analyze";
 import { normalizeForAnalysis } from "../text";
+import { MONTH_NAMES } from "../types";
 
 export class ImportError extends Error {}
 
@@ -33,16 +34,21 @@ export interface ImportSummary {
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
+const letters = (s: string) => normalizeForAnalysis(s).replace(/[^\p{L}\p{N}]/gu, "");
+
 /**
- * Identity of an email for exact-duplicate prevention. With a date: sender + minute + conversation subject
- * (so a quoted copy inside a later reply chain equals the original). Without a date the body is included.
+ * Identity of an email for exact-duplicate prevention.
+ * - strict: sender + minute + conversation subject + the first words of the body (so two different emails that one
+ *   sender sends in the same minute with the same subject are both kept). Undated emails use the whole body.
+ * - loose: sender + minute + conversation subject only. It is used solely to recognise a QUOTED copy of an email that
+ *   is already stored (or the other way round), whose body may be truncated or re-wrapped by Outlook.
  */
-export function fingerprint(p: { senderEmail: string; senderName: string; sentAt: Date | null; subject: string; body: string }): string {
+export function fingerprint(p: { senderEmail: string; senderName: string; sentAt: Date | null; subject: string; body: string }): { strict: string; loose: string } {
   const who = normalizeForAnalysis(p.senderEmail || p.senderName);
   const when = p.sentAt ? p.sentAt.toISOString().slice(0, 16) : "";
-  const parts = [who, when, conversationKey(normalizeForAnalysis(p.subject))];
-  if (!p.sentAt) parts.push(sha(normalizeForAnalysis(p.body)));
-  return sha(parts.join("|"));
+  const key = [who, when, conversationKey(normalizeForAnalysis(p.subject))].join("|");
+  const body = letters(stripSignature(p.body));
+  return { strict: sha(`${key}|${p.sentAt ? body.slice(0, 80) : sha(body)}`), loose: p.sentAt ? sha(key) : "" };
 }
 
 /** Imports one pasted batch. Additive: existing emails are never modified or removed. */
@@ -82,38 +88,47 @@ export async function importBatch(input: { year: number; month: number; text: st
   if (ambiguous) warnings.push(`${ambiguous} date(s) have an ambiguous day/month order (no date in this paste proves it) and were read as “${order === "DMY" ? "day/month" : "month/day"}”. Those that could fall in another month are flagged in Review.`);
 
   const employees = await prisma.employee.findMany();
-  const prepared = parsed.map((p) => ({ p, hash: fingerprint(p) }));
+  const prepared = parsed.map((p) => { const f = fingerprint(p); return { p, hash: f.strict, loose: f.loose }; });
 
   const hashes = [...new Set(prepared.map((x) => x.hash))];
   const mids = prepared.map((x) => x.p.messageId).filter((x): x is string => !!x);
   const seenHash = new Set<string>();
   const seenMid = new Set<string>();
+  const looseSeen = new Map<string, boolean>(); // looseHash -> was the stored/earlier copy a quoted one
   for (let i = 0; i < hashes.length; i += 500) {
     const rows = await prisma.email.findMany({ where: { contentHash: { in: hashes.slice(i, i + 500) } }, select: { contentHash: true } });
     rows.forEach((r) => seenHash.add(r.contentHash));
+  }
+  const looses = [...new Set(prepared.map((x) => x.loose).filter(Boolean))];
+  for (let i = 0; i < looses.length; i += 500) {
+    const rows = await prisma.email.findMany({ where: { looseHash: { in: looses.slice(i, i + 500) } }, select: { looseHash: true, quoted: true } });
+    rows.forEach((r) => looseSeen.set(r.looseHash, (looseSeen.get(r.looseHash) ?? false) || r.quoted));
   }
   for (let i = 0; i < mids.length; i += 500) {
     const rows = await prisma.email.findMany({ where: { messageId: { in: mids.slice(i, i + 500) } }, select: { messageId: true } });
     rows.forEach((r) => r.messageId && seenMid.add(r.messageId));
   }
 
-  const fresh: { p: ParsedEmail; hash: string }[] = [];
+  const fresh: { p: ParsedEmail; hash: string; loose: string }[] = [];
   const dupSubjects: string[] = [];
   let quotedRepeats = 0;
   for (const x of prepared) {
-    const dup = seenHash.has(x.hash) || (x.p.messageId && seenMid.has(x.p.messageId));
+    // a quoted copy equals a stored email with the same sender/minute/subject; a normal email equals a stored QUOTED copy
+    const looseDup = !!x.loose && looseSeen.has(x.loose) && (x.p.quoted || looseSeen.get(x.loose) === true);
+    const dup = seenHash.has(x.hash) || looseDup || (x.p.messageId && seenMid.has(x.p.messageId));
     if (dup) {
       if (x.p.quoted) quotedRepeats++;
       dupSubjects.push(x.p.subject || "(no subject)");
       continue;
     }
     seenHash.add(x.hash);
+    if (x.loose) looseSeen.set(x.loose, (looseSeen.get(x.loose) ?? false) || x.p.quoted);
     if (x.p.messageId) seenMid.add(x.p.messageId);
     fresh.push(x);
   }
 
   let outside = 0;
-  const rows = fresh.map(({ p, hash }) => {
+  const rows = fresh.map(({ p, hash, loose }) => {
     const role = isNmcAddress(p.senderEmail, settings.nmcAddresses) ? "NMC" : "EMPLOYEE";
     const m = matchEmployee({ email: p.senderEmail, name: p.senderName }, employees);
     const ent = extractEntities(p.subject, p.body);
@@ -124,7 +139,7 @@ export async function importBatch(input: { year: number; month: number; text: st
       senderName: p.senderName, senderEmail: p.senderEmail,
       toRecipients: p.to.join("; "), ccRecipients: p.cc.join("; "),
       subject: p.subject, sentAt: p.sentAt, sentAtAlt: p.sentAtAlt, body: p.body, rawSource: p.rawSource,
-      messageId: p.messageId, contentHash: hash, conversationKey: conversationKey(p.subject),
+      messageId: p.messageId, contentHash: hash, looseHash: loose, conversationKey: conversationKey(p.subject),
       isForward: p.isForward, isReply: p.isReply, quoted: p.quoted, uncertainFields: JSON.stringify(p.uncertainFields),
       incidentIds: ent.incidents.join(","), serviceIds: ent.services.join(","), circuitIds: ent.circuits.join(","),
       ipAddresses: ent.ips.join(","), devices: ent.devices.join(","), locations: ent.locations.join(","),
@@ -132,6 +147,18 @@ export async function importBatch(input: { year: number; month: number; text: st
       employeeId: role === "EMPLOYEE" ? (m.employee?.id ?? null) : null,
     };
   });
+
+  // wrong-month safeguard: most dated emails belong to a different month than the one selected
+  const dated = parsed.filter((p) => p.sentAt);
+  if (dated.length >= 3) {
+    const tally = new Map<string, number>();
+    for (const p of dated) { const k = `${p.sentAt!.getUTCFullYear()}-${p.sentAt!.getUTCMonth() + 1}`; tally.set(k, (tally.get(k) ?? 0) + 1); }
+    const [top, n] = [...tally.entries()].sort((a, b) => b[1] - a[1])[0];
+    const [ty, tm] = top.split("-").map(Number);
+    if ((ty !== year || tm !== month) && n / dated.length >= 0.5) {
+      warnings.push(`Most dated emails (${n} of ${dated.length}) are from ${MONTH_NAMES[tm - 1]} ${ty}, not the selected ${MONTH_NAMES[month - 1]} ${year}. If you chose the wrong month, delete this batch in the Batches table and paste again with the right month.`);
+    }
+  }
 
   const batch = await prisma.$transaction(async (tx) => {
     const max = await tx.batch.aggregate({ _max: { number: true } });
@@ -149,7 +176,12 @@ export async function importBatch(input: { year: number; month: number; text: st
   }, { timeout: 300_000, maxWait: 30_000 });
 
   // incremental analysis: the whole month is re-evaluated so new emails can be originals / duplicates / evidence of others
-  await analyzeMonth(year, month);
+  try {
+    await analyzeMonth(year, month);
+  } catch (e) {
+    await prisma.batch.update({ where: { id: batch.id }, data: { status: "ANALYSIS_FAILED" } });
+    throw new ImportError(`The emails of batch ${batch.number} were stored, but their analysis failed (${(e as Error).message.split("\n").filter(Boolean).pop()}). Open Settings → “Re-analyze month” to retry; do not paste them again.`);
+  }
 
   const mine = await prisma.email.findMany({ where: { batchId: batch.id }, select: { kind: true, role: true, employeeId: true, reviewStatus: true } });
   const counted = mine.filter((e) => e.kind === "REPORT");

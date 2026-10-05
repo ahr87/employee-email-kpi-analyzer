@@ -18,6 +18,8 @@ export interface ThreadMessage {
   isForward: boolean;
   isReply: boolean;
   incidentIds: string[];
+  /** The message did not name this employee and several emails with the same subject exist, so it may belong to another one. */
+  shared?: boolean;
 }
 
 export interface ClassificationInput {
@@ -92,10 +94,12 @@ export class RuleBasedClassifier implements EmailClassifier {
       : null;
 
     const evidence: string[] = [];
+    let usedShared = false;
     let forward = 0, noAction = 0, dupWords = 0, useful = 0;
     const add = (e: string) => { if (!evidence.includes(e)) evidence.push(e); };
 
     for (const m of nmc) {
+      const before = forward + noAction + dupWords;
       const text = normalizeForAnalysis(stripQuoted(m.body));
       const recipients = `${m.to} ${m.cc}`;
       const newRecipients = [...new Set(emailsIn(recipients).filter((e) => !ignore.has(e)))];
@@ -117,6 +121,7 @@ export class RuleBasedClassifier implements EmailClassifier {
       if (m.isReply && !m.isForward && !esc.length && !newRecipients.length) noAction += 15;
       if (dp.length) { dupWords += 50 + Math.min(20, (dp.length - 1) * 10); add(`duplicate wording (“${dp[0]}”)`); }
       if (us.length) useful += 10;
+      if (m.shared && forward + noAction + dupWords > before) usedShared = true;
     }
     if (others.length && (forward > 0 || nmc.some((m) => m.isForward))) {
       forward += 15; add(`${others.length} reply message(s) from another party after the NMC forward`);
@@ -127,6 +132,10 @@ export class RuleBasedClassifier implements EmailClassifier {
     const ev = evidence.join("; ");
 
     const finish = (r: ClassificationResult): ClassificationResult => {
+      if (usedShared && (r.classification === "FORWARDED" || r.classification === "NOT_USEFUL")) {
+        r.reviewReasons.push("AMBIGUOUS");
+        r.reason += " Note: several emails share this subject and the NMC message does not name this employee — please confirm it belongs to this email.";
+      }
       if (r.confidence < settings.confidenceThreshold && !r.reviewReasons.includes("NO_EVIDENCE") && !r.reviewReasons.includes("AMBIGUOUS")) r.reviewReasons.push("LOW_CONFIDENCE");
       if (possibleDuplicate && r.classification !== "DUPLICATE") {
         r.reviewReasons.push("UNCERTAIN_DUPLICATE");

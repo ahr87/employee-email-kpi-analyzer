@@ -98,7 +98,7 @@ export default function ImportPage() {
               <tr key={b.id}>
                 <Td>Batch {String(b.number).padStart(3, "0")}</Td><Td>{fmtDate(b.createdAt)}</Td>
                 <Td className="text-right">{b.totalParsed}</Td><Td className="text-right">{b.newEmails}</Td><Td className="text-right">{b.exactDuplicates}</Td><Td className="text-right">{b.needsReview}</Td>
-                <Td><Badge className="bg-emerald-50 text-emerald-700">{b.status}</Badge></Td>
+                <Td><Badge className={b.status === "COMPLETED" ? "bg-emerald-50 text-emerald-700" : "bg-red-100 text-red-800"}>{b.status === "COMPLETED" ? "Completed" : "Analysis failed — re-analyze"}</Badge></Td>
                 <Td><Button variant="ghost" size="sm" onClick={() => del(b)} aria-label="Delete batch"><Trash2 className="h-4 w-4" /></Button></Td>
               </tr>))}
             </tbody></table></div>

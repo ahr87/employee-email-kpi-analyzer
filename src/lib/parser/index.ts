@@ -1,6 +1,7 @@
 import { decodeEntities, htmlToText, looksLikeHtml } from "./html";
 import { parseDateDetailed } from "./dates";
 import { normalizeForAnalysis, parseView } from "../text";
+import { conversationKey } from "../classification/text";
 import type { ParsedEmail, ParseOptions, ParseResult } from "./types";
 
 export type { ParsedEmail, ParseResult, ParseOptions } from "./types";
@@ -89,8 +90,8 @@ function readHeader(raw: string[], view: string[], start: number): Omit<Block, "
     }
     break;
   }
-  const keys = Object.keys(fields);
-  if (!fields.from || !keys.some((k) => k !== "from")) return null;
+  // Outlook always prints Sent and/or Subject; "From: Baghdad / To: Basra" inside a body (route descriptions) is not a header
+  if (!fields.from || !(fields.sent?.view || fields.subject?.view)) return null;
   return { start, end, fields };
 }
 
@@ -169,7 +170,7 @@ function buildEmail(block: Block, bodyRaw: string[], rawSource: string, opts: Pa
 
   const mid = f.messageId?.view.match(/<[^>]+>/)?.[0] ?? rawSource.match(/^\s*Message-ID:\s*(<[^>]+>)/im)?.[1] ?? null;
   return {
-    senderName: sender.name || (sender.email ? "" : decodeEntities(clean(f.from?.raw ?? ""))),
+    senderName: sender.name || (sender.email || /^\s*\/o=/i.test(f.from?.raw ?? "") ? "" : decodeEntities(clean(f.from?.raw ?? ""))),
     senderEmail: sender.email,
     to: f.to?.raw ? formatList(f.to.raw) : [],
     cc: f.cc?.raw ? formatList(f.cc.raw) : [],
@@ -285,6 +286,15 @@ export function parseEmails(input: string, opts: ParseOptions = {}): ParseResult
     }
     emails.push(buildEmail(b, body, raw.slice(b.start, stop).join("\n").trim(), opts));
   });
+  // Outlook does not always print a separator before a quoted header block: a block that continues the previous
+  // message's conversation (same subject apart from RE:/FW:) and is not newer than it is quoted, too.
+  for (let i = 1; i < emails.length; i++) {
+    const prev = emails[i - 1], cur = emails[i];
+    if (cur.quoted || !cur.subject || conversationKey(cur.subject) !== conversationKey(prev.subject)) continue;
+    const sameSender = (cur.senderEmail || cur.senderName) === (prev.senderEmail || prev.senderName);
+    if (sameSender && !prev.isReply && !prev.isForward) continue; // two separate emails of one sender, not a chain
+    if (!cur.sentAt || !prev.sentAt || cur.sentAt <= prev.sentAt) cur.quoted = true;
+  }
   const quotedCount = emails.filter((e) => e.quoted).length;
   if (quotedCount) warnings.push(`${quotedCount} message(s) were found inside reply/forward chains and were split out as separate messages.`);
   return { emails, warnings };

@@ -43,7 +43,7 @@ export function MonthPicker({ year, month, onChange }: { year: number; month: nu
   if (!years.includes(year)) years.push(year);
   return (
     <div className="flex items-center gap-2">
-      <Select aria-label="Year" value={year} onChange={(e) => onChange(Number(e.target.value), month)} style={{ width: "6rem" }}>
+      <Select aria-label="Year" value={year} onChange={(e) => onChange(Number(e.target.value), month)} style={{ width: "7.5rem" }}>
         {years.sort((a, b) => b - a).map((y) => <option key={y}>{y}</option>)}
       </Select>
       <Select aria-label="Month" value={month} onChange={(e) => onChange(year, Number(e.target.value))} style={{ width: "10rem" }}>

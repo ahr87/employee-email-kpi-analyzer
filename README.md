@@ -32,7 +32,7 @@ Requirements: Node.js 20+ (tested on 22) and npm.
 npm install            # installs deps and generates the Prisma client
 cp .env.example .env   # DATABASE_URL="file:./data/app.db"
 npm run db:push        # creates the local SQLite database
-npm run dev            # http://localhost:3000
+npm run dev            # http://localhost:3000  (listens on 127.0.0.1 only)
 ```
 
 Production-style run: `npm run build && npm start`.
@@ -157,10 +157,12 @@ Review reasons: unmatched employee, missing date, ambiguous date, outside month,
 
 ## Privacy & security
 
-- Local only; no external calls. No telemetry; no secrets in the repo (`.env`, `*.db`, `data/` are git-ignored). Only synthetic data is committed (`sample-data/`).
-- **Settings → Data** provides month deletion, "reset all email data" and "reset everything" (typed confirmation).
-- Inputs validated with Zod; Prisma parameterised queries; HTML never rendered; file uploads limited to `.csv/.xlsx`.
-- The app has no login: it is intended to run on your own machine (`localhost`). Don't expose it on a network.
+- **Local only.** No external calls, no telemetry. The server listens on **127.0.0.1 only** (`npm run dev` / `npm start`), so other computers on your network cannot reach it. Use `http://localhost:3000`.
+- **Protection against other websites**: the API rejects requests whose `Host` is not a local name (DNS-rebinding) and state-changing requests from another origin, so a web page you visit cannot reset or delete your data. To deliberately serve another host name, set `ALLOWED_HOSTS=name1,name2` — there is still no login, so do not expose it on a network.
+- **Nothing sensitive in Git**: `.env`, `*.db` and `data/` are git-ignored; only synthetic data is committed (`src/lib/demo`, `tests`, `sample-data/employees.csv`). Real emails live only in `data/app.db` on your machine — back it up or delete it like any file.
+- **Settings → Data**: delete one month, reset all email data, or reset everything (typed confirmation).
+- **Safe rendering**: email text is always displayed as escaped text (no `innerHTML`), HTML pastes are converted to text, a Content-Security-Policy blocks scripts/resources from other origins, framing is denied. Excel cells never contain formulas from email text; CSV cells starting with `= + - @` are neutralised.
+- Inputs validated with Zod, parameterised queries (Prisma), uploads limited to `.csv/.xlsx`.
 
 ## Future AI support
 
@@ -192,7 +194,9 @@ The month simulation (`src/lib/demo/generate.ts`) generates 12 employees and 100
 - **Validated only against synthetic Outlook-style text.** No real Outlook sample has been tested. Layouts I have not seen (e.g. the Outlook *reading-pane* header with no `From:` label, localized labels other than English/Arabic, signatures with `From:` lines) may need parser tweaks — see below.
 - Classification depends on the evidence you paste (NMC replies/forwards) and on the phrase lists; unusual wording shows up as Pending Review rather than a guess.
 - Location extraction is heuristic (named places in the subject, “at/in X”, “site X”, Arabic “في X”); shared incident/circuit/service/device/IP evidence is much more reliable.
-- A follow-up written by a *different* employee inside someone else's conversation is treated as a follow-up (not counted).
+- A follow-up written by a *different* employee inside someone else's conversation is treated as a follow-up (not counted). NMC/department messages count as evidence for 14 days after the employee's email; when several emails share one subject and the NMC message does not name the employee, the result is sent to Review.
+- An employee with a second e-mail address appears as *Unmatched*; assign the email manually or change the address in Employees (one address per employee).
+- If NMC replies use a different subject than the employee's email, they are not linked (the email stays Pending Review — never guessed).
 - Single-user, no authentication; PDF export uses the browser's print dialog. Old Phase 1 databases should be recreated (`npm run db:push` after deleting `data/app.db`) because the identity key and columns changed.
 
 ## Real samples that would help most
