@@ -36,7 +36,8 @@ export default function EmailDetailPage({ params }: { params: Promise<{ id: stri
             <Row k="Date / time">{fmtDate(e.sentAt)}{e.outsideMonth && <Badge className="ml-2 bg-amber-100 text-amber-800">outside selected month ({e.monthDecision.toLowerCase()})</Badge>}</Row>
             <Row k="To">{e.toRecipients}</Row>
             <Row k="CC">{e.ccRecipients}</Row>
-            <Row k="Batch">Batch {e.batch.number} · imported {fmtDate(e.batch.createdAt)}</Row>
+            <Row k="Batch">Batch {e.batch.number} · imported {fmtDate(e.batch.createdAt)}{e.quoted && <Badge className="ml-2 bg-slate-100 text-slate-600">found inside a reply chain</Badge>}</Row>
+            <Row k="In the KPI">{e.kind === "REPORT" ? "Yes — counted as an employee email" : e.kind === "NMC" ? "No — NMC message, used as evidence" : "No — follow-up message, used as evidence"}</Row>
             {uncertain.length > 0 && <Row k="Parser unsure"><span className="text-amber-700">{uncertain.join(", ")}</span></Row>}
           </dl>
           <div className="border-t border-slate-100 p-4">
@@ -67,7 +68,8 @@ export default function EmailDetailPage({ params }: { params: Promise<{ id: stri
             <Card>
               <CardHeader title="Duplicate relationship" />
               <div className="space-y-3 p-4 text-sm">
-                {e.duplicateOf && <p>Duplicate of <Link className="text-violet-700 hover:underline" href={`/emails/${e.duplicateOf.id}`}>{e.duplicateOf.employee?.name ?? e.duplicateOf.senderName} — {e.duplicateOf.subject}</Link> ({fmtDate(e.duplicateOf.sentAt)}) · similarity {e.duplicateSimilarity}%</p>}
+                {e.duplicateReason && <p className="text-slate-600">{e.duplicateReason}</p>}
+                {e.duplicateOf && <p>Duplicate of <Link className="text-violet-700 hover:underline" href={`/emails/${e.duplicateOf.id}`}>{e.duplicateOf.employee?.name ?? e.duplicateOf.senderName} — {e.duplicateOf.subject}</Link> ({fmtDate(e.duplicateOf.sentAt)}) · similarity {e.duplicateSimilarity != null ? `${e.duplicateSimilarity}%` : "selected manually"}</p>}
                 {possible && <p className="text-amber-700">Possible duplicate (uncertain, {e.possibleDuplicateSim}%): <Link className="underline" href={`/emails/${possible.id}`}>{possible.employee?.name ?? possible.senderName} — {possible.subject}</Link></p>}
                 {e.duplicates.length > 0 && <div><p className="mb-1 text-slate-500">Later duplicates of this email:</p><ul className="space-y-1">{e.duplicates.map((d) => <li key={d.id}><Link className="text-violet-700 hover:underline" href={`/emails/${d.id}`}>{d.employee?.name ?? d.senderName} — {fmtDate(d.sentAt)} ({d.duplicateSimilarity}%)</Link></li>)}</ul></div>}
               </div>
@@ -78,10 +80,10 @@ export default function EmailDetailPage({ params }: { params: Promise<{ id: stri
 
       {thread.length > 0 && (
         <Card>
-          <CardHeader title={`Conversation (${thread.length} related message${thread.length > 1 ? "s" : ""})`} />
+          <CardHeader title={`Conversation — ${thread.length} other message${thread.length > 1 ? "s" : ""} with the same subject`} />
           <ul className="divide-y divide-slate-100">{thread.map((m) => (
             <li key={m.id} className="p-4 text-sm">
-              <div className="flex flex-wrap items-center gap-2"><Link href={`/emails/${m.id}`} className="font-medium text-blue-700 hover:underline">{m.subject}</Link><Badge className={m.role === "NMC" ? "bg-slate-800 text-white" : "bg-slate-100"}>{m.role === "NMC" ? "NMC" : "Employee"}</Badge><span className="text-xs text-slate-400">{m.senderName} · {fmtDate(m.sentAt)}</span></div>
+              <div className="flex flex-wrap items-center gap-2"><Link href={`/emails/${m.id}`} className="font-medium text-blue-700 hover:underline">{m.subject}</Link><Badge className={m.role === "NMC" ? "bg-slate-800 text-white" : "bg-slate-100"}>{m.role === "NMC" ? "NMC" : m.counted ? "Employee report" : "Other / follow-up"}</Badge><Badge className="bg-blue-50 text-blue-700">{m.isForward ? "Forward" : m.isReply ? "Reply" : "Original"}</Badge>{m.quoted && <Badge className="bg-slate-100 text-slate-500">quoted</Badge>}<span className="text-xs text-slate-400">{m.senderName} · {fmtDate(m.sentAt)}</span></div>
               <pre className="mt-2 max-h-40 overflow-auto text-xs break-words whitespace-pre-wrap text-slate-600">{m.body}</pre>
             </li>))}</ul>
         </Card>

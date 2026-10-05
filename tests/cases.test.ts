@@ -5,7 +5,7 @@ import { applyEmailAction } from "@/lib/import/emails";
 import { monthlyStats } from "@/lib/reports/aggregate";
 import { saveSettings } from "@/lib/settings";
 import { resetData } from "@/lib/demo";
-import { chain, msg, NMC, T, type Msg } from "./helpers";
+import { chain, msg, NMC, T } from "./helpers";
 
 const EMP = [
   ["E1", "Ahmed Ali", "ahmed@company.test"], ["E2", "Sara Hassan", "sara@company.test"], ["E3", "Omar Khalid", "omar@company.test"],

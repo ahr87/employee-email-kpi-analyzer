@@ -226,26 +226,34 @@ export function parseEmails(input: string, opts: ParseOptions = {}): ParseResult
   let text = (input ?? "").replace(/\r\n?/g, "\n");
   if (!text.trim()) return { emails: [], warnings: ["Nothing to parse: the pasted text is empty."] };
 
-  if (looksLikeHtml(text)) {
-    text = htmlToText(text);
-    warnings.push("Pasted content contained HTML; it was converted to safe plain text (scripts and styles removed).");
-  }
-  const raw = text.split("\n");
-  const view = raw.map(parseView);
-
-  // locate header blocks
-  const blocks: Block[] = [];
-  for (let i = 0; i < raw.length; ) {
-    const h = headerOf(raw[i], view[i]);
-    if (h && h.key === "from") {
-      const b = readHeader(raw, view, i);
-      if (b) {
-        blocks.push({ ...b, quoted: blocks.length > 0 && isQuotedStart(raw, i) });
-        i = b.end;
-        continue;
+  const locate = (raw: string[], view: string[]): Block[] => {
+    const found: Block[] = [];
+    for (let i = 0; i < raw.length; ) {
+      const h = headerOf(raw[i], view[i]);
+      if (h && h.key === "from") {
+        const b = readHeader(raw, view, i);
+        if (b) {
+          found.push({ ...b, quoted: found.length > 0 && isQuotedStart(raw, i) });
+          i = b.end;
+          continue;
+        }
       }
+      i++;
     }
-    i++;
+    return found;
+  };
+
+  // Plain text first (keeps the pasted characters exactly). Only when no headers are found and the paste looks like
+  // HTML source is it converted to safe text (scripts/styles/comments removed, tags stripped, entities decoded).
+  let raw = text.split("\n");
+  let view = raw.map(parseView);
+  let blocks = locate(raw, view);
+  if (blocks.length === 0 && looksLikeHtml(text)) {
+    text = htmlToText(text);
+    raw = text.split("\n");
+    view = raw.map(parseView);
+    blocks = locate(raw, view);
+    warnings.push("Pasted content contained HTML; it was converted to safe plain text (scripts and styles removed).");
   }
 
   if (blocks.length === 0) {

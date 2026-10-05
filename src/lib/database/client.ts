@@ -7,7 +7,7 @@ function resolveUrl(): string {
   const url = process.env.DATABASE_URL ?? "file:./data/app.db";
   if (!url.startsWith("file:")) throw new Error("Only SQLite (file:) DATABASE_URL values are supported.");
   const rel = url.slice("file:".length);
-  const abs = path.isAbsolute(rel) ? rel : path.resolve(process.cwd(), rel);
+  const abs = path.isAbsolute(rel) ? rel : path.resolve(/*turbopackIgnore: true*/ process.cwd(), rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   return `file:${abs}`;
 }

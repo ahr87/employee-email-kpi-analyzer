@@ -29,7 +29,7 @@ export default function ReviewPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div><h1 className="text-2xl font-semibold">Review Required</h1><p className="text-sm text-slate-500">{MONTH_NAMES[month - 1]} {year}{data ? ` · ${data.total} item(s) waiting` : ""}. Approving or changing a classification makes it final and protects it from re-analysis.</p></div>
+        <div><h1 className="text-2xl font-semibold">Review Required</h1><p className="text-sm text-slate-500">{MONTH_NAMES[month - 1]} {year}{data ? ` · ${data.total} item(s) waiting` : ""}. Confirming or changing a classification makes it final and protects it from re-analysis.</p></div>
         <Select value={reason} onChange={(e) => setReason(e.target.value)} className="w-64"><option value="">All review reasons</option>{Object.entries(REVIEW_REASON_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select>
       </div>
       {loading && !data ? <Spinner /> : error ? <Card><ErrorState message={error} onRetry={reload} /></Card> : rows.length === 0 ? (

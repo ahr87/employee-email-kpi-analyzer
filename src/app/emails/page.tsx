@@ -18,7 +18,7 @@ function EmailsInner() {
   const { year, month, ready } = useMonth();
   const [q, setQ] = useState(sp.get("q") ?? "");
   const [allMonths, setAllMonths] = useState(!!sp.get("q"));
-  const [f, setF] = useState({ employeeId: "", classification: sp.get("classification") ?? "", reviewStatus: "", department: "", team: "", batchId: "", confidence: "" });
+  const [f, setF] = useState({ view: "counted", employeeId: "", classification: sp.get("classification") ?? "", reviewStatus: "", department: "", team: "", batchId: "", confidence: "" });
   const [sort, setSort] = useState("sentAt");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(1);
@@ -49,8 +49,9 @@ function EmailsInner() {
         <div><h1 className="text-2xl font-semibold">Emails</h1><p className="text-sm text-slate-500">{allMonths ? "All months" : `${MONTH_NAMES[month - 1]} ${year}`}{data ? ` · ${data.total} email(s)` : ""}</p></div>
       </div>
       <Card className="space-y-3 p-3">
-        <div className="grid gap-2 md:grid-cols-4 xl:grid-cols-8">
-          <Input className="md:col-span-2" placeholder="Search…" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} />
+        <div className="grid gap-2 md:grid-cols-4 xl:grid-cols-9">
+          <Input className="md:col-span-2" aria-label="Search" placeholder="Search…" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} />
+          <Select value={f.view} onChange={set("view")} aria-label="Messages shown"><option value="counted">Employee emails (counted)</option><option value="followups">Follow-ups (not counted)</option><option value="nmc">NMC messages (evidence)</option><option value="all">All messages</option></Select>
           <Select value={f.employeeId} onChange={set("employeeId")}><option value="">All employees</option>{emps.data?.employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select>
           <Select value={f.classification} onChange={set("classification")}><option value="">All classifications</option>{CLASSES.map((c) => <option key={c} value={c}>{CLASS_LABELS[c]}</option>)}</Select>
           <Select value={f.confidence} onChange={set("confidence")}><option value="">Any confidence</option><option value="low">Below 75%</option><option value="high">75% and above</option></Select>
@@ -78,7 +79,7 @@ function EmailsInner() {
                   <Td className="whitespace-nowrap">{fmtDate(e.sentAt)}</Td>
                   <Td>{e.employee ? <Link className="text-blue-700 hover:underline" href={`/employees/${e.employee.id}`}>{e.employee.name}</Link> : <Badge className="bg-red-50 text-red-700">Unmatched · {e.senderEmail || e.senderName || "?"}</Badge>}</Td>
                   <Td className="max-w-md"><Link href={`/emails/${e.id}`} className="font-medium hover:text-blue-700">{e.subject || "(no subject)"}</Link></Td>
-                  <Td><ClassBadge value={e.finalClass} />{e.isManual && <Badge className="ml-1 bg-blue-50 text-blue-700">manual</Badge>}</Td>
+                  <Td>{e.kind === "NMC" ? <Badge className="bg-slate-800 text-white">NMC</Badge> : e.kind === "FOLLOW_UP" ? <Badge className="bg-slate-200 text-slate-700">follow-up</Badge> : <ClassBadge value={e.finalClass} />}{e.isManual && <Badge className="ml-1 bg-blue-50 text-blue-700">manual</Badge>}</Td>
                   <Td><ConfBadge value={e.confidence} /></Td>
                   <Td>{e.duplicateOf ? <Link className="text-xs text-violet-700 hover:underline" href={`/emails/${e.duplicateOf.id}`}>{e.duplicateOf.employee?.name ?? e.duplicateOf.senderName} · {e.duplicateSimilarity}%</Link> : "—"}</Td>
                   <Td>{e.reviewStatus === "NEEDS_REVIEW" ? <ReasonBadges json={e.reviewReasons} /> : <Badge className="bg-slate-100 text-slate-600">{e.reviewStatus === "REVIEWED" ? "Reviewed" : "OK"}</Badge>}</Td>

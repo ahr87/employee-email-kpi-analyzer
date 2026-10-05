@@ -117,6 +117,13 @@ Is this a problem?`;
     expect(warnings.join(" ")).toMatch(/HTML/);
   });
 
+  it("plain-text paste that merely mentions HTML tags is kept exactly (shown escaped later), not stripped", () => {
+    const body = 'see <img src=x onerror="alert(1)"> and <script>alert(2)</script>';
+    const { emails } = parseEmails(msg({ ...ahmed, at: T(14, 10, 32), subject: "Tags", body }));
+    expect(emails[0].body).toBe(body);
+    expect(emails[0].rawSource).toContain(body);
+  });
+
   it("empty paste and text without headers", () => {
     expect(parseEmails("  \n ").emails).toHaveLength(0);
     const r = parseEmails("just some random text");

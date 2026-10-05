@@ -44,10 +44,10 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
   const nmcEmails = settings.nmcAddresses.filter((n) => n.enabled && n.address.includes("@") && !n.address.startsWith("@")).map((n) => n.address.toLowerCase());
 
   if (opts.resetManual) {
-    await prisma.email.updateMany({
-      where: { year, month, ...(opts.emailIds ? { id: { in: opts.emailIds } } : {}) },
-      data: { isManual: false, overrideReason: null, overrideAt: null, employeeManual: false },
-    });
+    const ids = opts.emailIds;
+    const reset = { isManual: false, overrideReason: null, overrideAt: null, employeeManual: false };
+    if (!ids) await prisma.email.updateMany({ where: { year, month }, data: reset });
+    else for (let i = 0; i < ids.length; i += 400) await prisma.email.updateMany({ where: { year, month, id: { in: ids.slice(i, i + 400) } }, data: reset });
   }
 
   const [monthRows, employees] = await Promise.all([
@@ -56,9 +56,11 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
   ]);
   const inMonth = new Set(monthRows.map((e) => e.id));
   const keys = [...new Set(monthRows.map((e) => e.conversationKey).filter(Boolean))];
-  const extra = keys.length
-    ? await prisma.email.findMany({ where: { conversationKey: { in: keys }, monthDecision: { not: "EXCLUDED" }, NOT: { year, month } }, select: FIELDS })
-    : [];
+  // SQLite limits the number of bound parameters, so look related conversations up in chunks
+  const extra: Row[] = [];
+  for (let i = 0; i < keys.length; i += 400) {
+    extra.push(...(await prisma.email.findMany({ where: { conversationKey: { in: keys.slice(i, i + 400) }, monthDecision: { not: "EXCLUDED" }, NOT: { year, month } }, select: FIELDS })));
+  }
   const all: Row[] = [...monthRows, ...extra];
   const empById = new Map(employees.map((e) => [e.id, e]));
   const target = new Set(opts.emailIds ?? monthRows.map((e) => e.id));

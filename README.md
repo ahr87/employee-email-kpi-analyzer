@@ -50,13 +50,13 @@ If Playwright cannot find a browser, set `PW_CHROMIUM=/path/to/chrome`.
 
 ## Daily workflow
 
-1. **Employees** – add or import your employees once (CSV/Excel with `Employee ID, Employee Name, Email Address, Department, Team, Active`; export to CSV/Excel any time). The sender **e-mail address** is the matching key (case-insensitive). If Outlook copied only a display name, a *unique exact name* match is accepted as a fallback.
-2. **Settings → Classification → NMC addresses**: list the address(es)/domain(s) NMC replies from (e.g. `nmc@company.com` or `@company.com`). Replies/forwards from these senders are the *evidence* used to classify employee emails; they are stored but never counted as employee emails.
-3. **Paste & Analyze**: choose year + month, paste the emails (you may paste employee emails *and* NMC replies/forwards together, as many as you like), click **Analyze Emails**. You get a summary: parsed, matched, unmatched, exact duplicates ignored, auto-classified, needing review.
-4. **Review**: approve, change classification, assign unmatched senders to an employee, and decide on out-of-month emails (Include / Exclude).
-5. **Dashboard / Reports**: numbers update immediately. **Reports → Export Excel / CSV** (or *Print / PDF* via the browser).
+1. **Employees** – add or import your employees once (CSV/Excel: `Employee ID, Employee Name, Email Address, Department, Team, Active`; export any time). The sender **e-mail address** is the matching key (case-insensitive). If Outlook copied only a display name, a *unique exact name* match is accepted as a fallback.
+2. **Settings → NMC addresses**: add one or more addresses or `@domains` (add / edit / delete / enable-disable). Messages from these senders are recognised as NMC replies/forwards inside copied conversations. They are kept as **evidence** and never counted as employee emails.
+3. **Paste & Analyze**: choose year + month, paste the emails — single emails, many emails, or whole reply/forward chains (include the NMC replies and forwards!) — and click **Analyze Emails**. The import summary shows: imported, exact duplicates ignored, matched employees, unmatched, automatically classified, review required, out-of-month, and evidence-only messages. It stays visible when you navigate away and come back.
+4. **Review**: one click per item — **Confirm · Forwarded · Not Useful · Duplicate… · Pending · Other**. *Duplicate…* opens a picker to choose the original email (the system's suggestion is pre-marked). Unmatched senders can be assigned to an employee; out-of-month emails can be included or excluded.
+5. **Dashboard / Reports**: totals, per-employee table, KPI. Manual decisions change them immediately. **Reports → Export Excel / CSV** (or *Print / PDF* via the browser).
 
-Every paste is a **batch** (Batch 001, 002 …). Batches are strictly additive: pasting never resets or overwrites earlier data. History for every month is kept; switch months in the header.
+Every paste is a **batch**; batches are strictly additive and attached to the selected month. Pasting never resets earlier data. Month history is kept.
 
 ## Architecture
 
@@ -76,7 +76,7 @@ src/
     audit/             audit log
     database/          Prisma client (better-sqlite3 adapter)
 prisma/schema.prisma   data model
-sample-data/           synthetic employees + emails
+sample-data/employees.csv  example employee import file (fictional); src/lib/demo = synthetic month generator
 tests/  e2e/           Vitest and Playwright
 ```
 
@@ -104,30 +104,48 @@ Stack: Next.js 16 (React 19, TypeScript), Tailwind CSS 4, Prisma 7 + SQLite (`be
 - **Unmatched senders** are counted in the totals but in no employee row, and appear in Review.
 - **PDF**: via the browser's Print dialog (print stylesheet), Excel/CSV are first-class.
 
-## Parsing
+## Parsing (copy/paste from Outlook)
 
-Tolerates common Outlook shapes: header blocks (`From/Sent/To/Cc/Subject`, also `Date/Received`, English and Arabic labels), `Name <addr>`, `Name [addr]`, `Name (addr)`, bare addresses, multi-line recipient lists, many date formats (including Arabic month names/digits), tab-separated message-list rows, and HTML. Rules:
+The parser is a separate module (`src/lib/parser`) tested with strings shaped like real Outlook clipboard text (`tests/helpers.ts` builds several styles). It handles:
 
-- A `From:` header block starts a new email, **unless** it follows a quote marker (`-----Original Message-----`, `________`, `On … wrote:`, `>`), in which case it is part of the previous body. A line like `==========` forces a boundary.
-- Anything the parser can't determine is marked **uncertain**, never invented (e.g. missing sender → *Unmatched*, missing date → *Date invalid* review reason). The pasted text of every email is stored verbatim (`rawSource`) and shown on the email page.
-- Pasted HTML is reduced to plain text (scripts/styles/comments stripped, entities decoded). Email content is **always rendered as escaped text** — never as HTML.
+- **Header blocks** `From / Sent / To / Cc / Subject` (also `Date`, `Received`, `Sender`, …) in English **and Arabic** (`من / تم الإرسال / إلى / نسخة / الموضوع`). Values may be on the same line or on the **next line** (`From:⏎Ahmed Ali [mailto:…]`), blank lines between header lines are tolerated, `Importance:`/`Attachments:` lines are skipped, wrapped recipient lists are joined.
+- **Addresses**: `Name <a@b>`, `Name [a@b]`, `Name [mailto:a@b]`, markdown-style `Name [a@b](mailto:a@b)`, bare addresses, name-only (→ uncertain, never invented).
+- **Dates**: `Monday, September 14, 2026 10:32 AM`, `14 September 2026`, `September 14, 2026`, `14/09/2026 10:32`, `09/14/2026`, `2026-09-14`, `14-Sep-2026`, 2-digit years, Arabic month names/digits and Arabic AM/PM. **Ambiguous** numeric dates (`03/04/2026`) follow the Settings order, the alternative reading is kept, and the email is flagged **only if the other reading would change its month**. If a pasted date proves the order (e.g. `25/04`), that order is used, saved to Settings and ambiguity flags stop; mixed evidence produces a warning.
+- **Reply / forward chains**: every header block becomes its own message, so an NMC reply and a forward that sit *below* each other are separated into original / reply / forward (messages found inside a chain are marked *quoted*). `-----Original Message-----`, `________`, `Begin forwarded message`, `On … wrote:` and `>` quoting are recognised and removed from bodies.
+- **Arabic / mixed text and RTL marks**: header detection runs on a normalised *view* (bidi marks, Arabic-Indic digits, letter variants); **stored bodies and `rawSource` keep the exact pasted characters**. Normalised text is used only for analysis (phrase matching, similarity, entity extraction).
+- **HTML**: a plain-text paste is kept verbatim. Only if no headers are found and the text looks like HTML source is it converted to text (scripts/styles/comments removed, tags stripped, entities decoded). Email content is **always displayed as escaped text** and a Content-Security-Policy blocks inline remote loading.
+- Anything that cannot be determined is marked **uncertain** (missing sender → Unmatched, missing date → Review). A paste without any headers becomes one email with uncertain fields and a warning.
+
+## Conversation model
+
+Messages with the same normalised subject (ignoring `RE:`/`FW:`/`رد:`/`إعادة توجيه:`) form a conversation. Per conversation:
+
+| Kind | Rule | Counted in KPI |
+|---|---|---|
+| **NMC** | sender matches an enabled NMC address | no — evidence |
+| **Follow-up** | later message with a reply/forward prefix, or a repeat from a sender who already wrote in the conversation (employee "thanks", department replies) | no — evidence |
+| **Report** | everything else (the employee's original email) | **yes** |
+
+Messages found twice (e.g. an original that is also quoted inside a later chain) are the same email: the identity key is *sender + minute + conversation subject*, so quoted copies are never imported again.
 
 ## Classification logic
 
-Deterministic, explainable, multi-signal (never a single keyword). In priority order:
+Deterministic and explainable; **keywords are evidence, not truth**. A phrase only counts if it appears in an **NMC message after the employee's email** (never in the employee's own text), and negated uses (“not forwarded”, “لم يتم”) are skipped. Without evidence the answer is **Pending Review** — an escalation or reply is never invented.
 
-1. **Business duplicate** (see below) → `DUPLICATE`.
-2. Evidence in later **NMC messages of the same conversation**: `FW:` forwards (+55), department/team recipients (+20), escalation wording such as "escalated to / kindly check / ticket created" (+30…), a newly raised ticket/incident number (+15) → *forward score*. "No action required / known issue / not applicable / FYI…" wording (+45…) and a plain `RE:` reply (+20) → *no-action score* (English and Arabic phrase lists in `classification/phrases.ts`).
-3. Decision: strong forward score → `FORWARDED`; strong no-action score → `NOT_USEFUL`; both strong and close → `PENDING_REVIEW` (ambiguous); otherwise `PENDING_REVIEW` (no evidence). Confidence grows with evidence.
+1. **Business duplicate** (below) → `DUPLICATE`.
+2. **Forward score**: NMC `FW:` (+55), NMC added recipients outside the conversation (+15–20, +10 if it looks like a team), escalation phrase (+30…), a ticket/incident number raised by NMC (+15), a reply from another party after the forward (+15), acknowledgement phrases only *reinforce* existing evidence. **No-action score**: no-action phrase (+45…), plain NMC reply without escalation (+15). **Duplicate wording** from NMC (“already reported”) → `DUPLICATE` for review if the original is unknown.
+3. Decision: strong forward → `FORWARDED`; strong no-action → `NOT_USEFUL`; both strong and close → `PENDING_REVIEW` (contradictory); otherwise `PENDING_REVIEW`. Confidence grows with evidence; below the threshold (default 75) → Review.
 
-Review reasons: low confidence, unmatched employee, invalid date, outside month, uncertain duplicate, ambiguous or missing evidence.
+Phrase lists (**escalation / not useful / duplicate / useful-action**) are editable in Settings (English + Arabic; letter variants and diacritics are ignored) and *Reset to defaults* is available. Saving settings can re-analyze all months (manual decisions protected).
+
+Review reasons: unmatched employee, missing date, ambiguous date, outside month, low confidence, possible duplicate, contradictory evidence, no evidence.
 
 ## Duplicate detection
 
-Two different concepts:
-
-- **Exact duplicate** – the same email pasted again. Detected by `Message-ID` (if present) or a SHA-256 of sender + date/minute + subject + body; ignored on import and reported ("Duplicate email already exists"). Works across batches and months.
-- **Business duplicate** – *different employees* reporting the same incident. A weighted score from subject similarity, body similarity, shared locations, technology terms, issue concept (outage ≈ down ≈ offline…), time proximity, and shared incident / circuit / service IDs (near-decisive). ≥ similarity threshold (default 80) → `DUPLICATE`, linked to the earliest original (chains resolve to the root). Within 15 points below the threshold → "possible duplicate" in Review. The same employee re-sending is not a business duplicate.
+- **Exact duplicate** – the same email pasted again (also as a quoted copy in a chain; also by `Message-ID` when present). Not imported again; reported in the summary.
+- **Business duplicate** – *different employees* about the same underlying incident. Evidence tiers: **very strong** = same incident/ticket number, same circuit ID (score ≥ 93); **strong** = same service ID (+location), same device name or IP address (≥ 84–90); **medium** = same specific place + same type of issue (outage/slow/unstable…, English/Arabic/dialect) within 2 h, plus weighted subject/body/technology similarity; **weak** = similar wording only — capped below the threshold unless a place or identifier is shared. Different places reduce the score. Signatures/disclaimers are ignored when extracting places.
+- **Original selection**: the **earliest by timestamp** (never by paste order); on equal timestamps the email carrying an incident/ticket number; chains resolve to the root. The reason reads like “Same service ID (svc-90017) and same location (karrada); Ahmed Ali reported the issue 11 minutes earlier. Similarity 94%.” Near-misses become *possible duplicate* review items.
+- In Review you can pick any email as the original manually.
 
 ## KPI settings
 
@@ -135,7 +153,7 @@ Two different concepts:
 
 ## Reports & export
 
-*Reports → Export Excel* produces sheets **Summary** (per employee + totals + KPI), **Email Details**, **Classification Summary**, **Review Required**, **Employees**. CSV exports the summary. CSV cells starting with `= + - @` are neutralised against spreadsheet formula injection.
+*Reports → Export Excel* produces six sheets with frozen headers, filters and readable widths: **Summary** (management view: month totals + employee table with KPI/rating, no email text), **Employee Details** (shares, avoidable %, volume vs. quality), **Email Details** (no bodies), **Classification Summary**, **Review Required**, **Employees**. CSV exports the employee summary. CSV cells starting with `= + - @` are neutralised against spreadsheet formula injection.
 
 ## Privacy & security
 
@@ -160,8 +178,23 @@ Two different concepts:
 | Database errors | Ensure `DATABASE_URL` is a `file:` path that is writable; run `npm run db:push`. |
 | Start over | Settings → Reset, or delete `data/app.db` and run `npm run db:push`. |
 
+## Testing
+
+```bash
+npm test               # 70+ unit/integration tests (parser on Outlook-style text, classifier, duplicates, KPI, import cases, 100+-email month, 2,500-email performance)
+npm run build && npm run test:e2e   # Playwright: select month → paste → analyze → classification & employee totals → exact duplicate → multiple batches → review → report → Excel export (+ XSS check, NMC address settings)
+npm run typecheck && npm run lint
+```
+The month simulation (`src/lib/demo/generate.ts`) generates 12 employees and 100+ synthetic emails (forwarded, not useful, duplicates, pending, unmatched, Arabic, mixed, out-of-month, undated, follow-ups) in three batches plus repeated pastes, and compares every result with the ground truth. **Settings → Load synthetic demo data** loads the same month.
+
 ## Limitations
 
-- Classification quality depends on the evidence you paste (NMC replies/forwards); wording lists are English/Arabic and tunable in code/Settings.
-- Location extraction is heuristic (capitalised words / "at X"); shared IDs are much more reliable.
-- Single-user, no authentication; PDF export uses the browser's print dialog.
+- **Validated only against synthetic Outlook-style text.** No real Outlook sample has been tested. Layouts I have not seen (e.g. the Outlook *reading-pane* header with no `From:` label, localized labels other than English/Arabic, signatures with `From:` lines) may need parser tweaks — see below.
+- Classification depends on the evidence you paste (NMC replies/forwards) and on the phrase lists; unusual wording shows up as Pending Review rather than a guess.
+- Location extraction is heuristic (named places in the subject, “at/in X”, “site X”, Arabic “في X”); shared incident/circuit/service/device/IP evidence is much more reliable.
+- A follow-up written by a *different* employee inside someone else's conversation is treated as a follow-up (not counted).
+- Single-user, no authentication; PDF export uses the browser's print dialog. Old Phase 1 databases should be recreated (`npm run db:push` after deleting `data/app.db`) because the identity key and columns changed.
+
+## Real samples that would help most
+
+Anonymised copies (names/addresses replaced) of: (1) one email copied from the message list and one opened in its own window, (2) a reply chain with an NMC reply and a forward to another team, (3) an Arabic-UI Outlook copy, (4) a thread containing a department reply, (5) how a forwarded-to-group email looks (distribution list names), (6) typical NMC no-action and escalation wording.

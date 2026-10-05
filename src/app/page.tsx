@@ -11,11 +11,12 @@ import type { MonthlyStats } from "@/lib/reports/aggregate";
 
 type Trend = { months: ({ month: number; total: number; score: number | null; FORWARDED: number; NOT_USEFUL: number; DUPLICATE: number; PENDING_REVIEW: number; OTHER: number })[] };
 
-function Stat({ label, value, href, tone }: { label: string; value: number; href?: string; tone?: string }) {
+function Stat({ label, value, href, tone, sub, highlight }: { label: string; value: number; href?: string; tone?: string; sub?: string; highlight?: boolean }) {
   const body = (
-    <Card className="p-4 transition hover:shadow">
+    <Card className={`p-4 transition hover:shadow ${highlight ? "border-red-300 ring-1 ring-red-200" : ""}`}>
       <div className="text-xs font-medium text-slate-500">{label}</div>
       <div className={`mt-1 text-2xl font-semibold tabular-nums ${tone ?? ""}`}>{value}</div>
+      {sub && <div className="mt-0.5 text-[11px] text-slate-400">{sub}</div>}
     </Card>
   );
   return href ? <Link href={href}>{body}</Link> : body;
@@ -58,14 +59,15 @@ export default function Dashboard() {
         </Link>
       )}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
-        <Stat label="Total Employees" value={data.totalEmployees} />
-        <Stat label="Total Emails" value={data.totalEmails} href={`/emails?${qs}`} />
-        <Stat label="Forwarded" value={data.counts.FORWARDED} href={`/emails?${qs}&classification=FORWARDED`} tone="text-emerald-700" />
+        <Stat label="Total Emails" value={data.totalEmails} href={`/emails?${qs}`} sub={`from ${data.employees.filter((e) => e.kpi.total > 0).length} of ${data.totalEmployees} employees`} />
+        <Stat label="Useful / Forwarded" value={data.counts.FORWARDED + data.counts.OTHER} href={`/emails?${qs}&classification=FORWARDED`} tone="text-emerald-700" />
         <Stat label="Not Useful" value={data.counts.NOT_USEFUL} href={`/emails?${qs}&classification=NOT_USEFUL`} tone="text-amber-700" />
         <Stat label="Duplicate" value={data.counts.DUPLICATE} href={`/emails?${qs}&classification=DUPLICATE`} tone="text-violet-700" />
         <Stat label="Pending Review" value={data.counts.PENDING_REVIEW} href={`/emails?${qs}&classification=PENDING_REVIEW`} tone="text-orange-600" />
-        <Stat label="Unmatched" value={data.unmatched} href="/review" tone="text-red-700" />
+        <Stat label="Unmatched" value={data.unmatched} href="/review" tone="text-red-700" sub="sender not in Employees" />
+        <Stat label="Review Required" value={data.needsReview} href="/review" tone={data.needsReview ? "text-red-700" : "text-emerald-700"} sub={data.needsReview ? "click to resolve" : "all clear"} highlight={data.needsReview > 0} />
       </div>
+      <p className="-mt-2 text-xs text-slate-400">{data.nmcMessages} NMC message(s) used as evidence · counts show employee emails only (replies and follow-ups are not counted).</p>
 
       <div className="grid gap-5 lg:grid-cols-3">
         <Card><CardHeader title={`Outcome of ${data.totalEmails} emails (${useful} useful)`} /><div className="p-2"><ClassPie counts={data.counts} /></div></Card>
