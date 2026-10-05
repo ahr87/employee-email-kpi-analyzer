@@ -50,7 +50,7 @@ export function parseDate(input: string, order: "DMY" | "MDY" = "DMY"): Date | n
   // numeric: 01/09/2026
   m = s.match(/(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
   if (m) {
-    let a = +m[1], b = +m[2];
+    const a = +m[1], b = +m[2];
     let day = order === "DMY" ? a : b;
     let mon = order === "DMY" ? b : a;
     if (mon > 12 && day <= 12) [day, mon] = [mon, day];

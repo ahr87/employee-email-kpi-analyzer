@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+:root { color-scheme: light; }
+body { @apply bg-slate-50 text-slate-800 antialiased; font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans Arabic", sans-serif; }
+table { border-collapse: collapse; }
+@media print {
+  aside, header, .no-print { display: none !important; }
+  main { padding: 0 !important; }
+  body { background: white; }
+}

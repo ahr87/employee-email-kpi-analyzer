@@ -61,7 +61,7 @@ describe("data integrity", () => {
     const e = (await prisma.email.findFirst())!;
     expect(e.finalClass).toBe("PENDING_REVIEW");
     await applyEmailAction(e.id, { action: "override", classification: "FORWARDED", reason: "Confirmed by phone" });
-    let s = await monthlyStats(2026, 9);
+    const s = await monthlyStats(2026, 9);
     expect(s.counts.FORWARDED).toBe(1);
     expect(s.employees.find((x) => x.name === "Alice")!.kpi.score).toBe(100);
 

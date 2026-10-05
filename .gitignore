@@ -22,3 +22,5 @@ src/generated
 # misc
 .DS_Store
 npm-debug.log*
+test-results
+playwright-report
