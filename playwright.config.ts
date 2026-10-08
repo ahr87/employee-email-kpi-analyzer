@@ -1,19 +1,20 @@
 import { defineConfig } from "@playwright/test";
 
-// Run `npm run build` first. Uses its own throw-away SQLite file.
+// Builds the static site and serves ./out under the GitHub Pages base path, exactly like production.
+const BASE = "/employee-email-kpi-analyzer";
 export default defineConfig({
   testDir: "e2e",
-  timeout: 60_000,
+  timeout: 90_000,
   workers: 1,
   use: {
-    baseURL: "http://127.0.0.1:3200",
+    baseURL: `http://127.0.0.1:3200${BASE}/`,
     launchOptions: process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},
+    acceptDownloads: true,
   },
   webServer: {
-    command: "rm -f data/e2e.db && npx prisma db push && npx next start -H 127.0.0.1 -p 3200",
-    url: "http://127.0.0.1:3200/api/months",
-    env: { DATABASE_URL: "file:./data/e2e.db" },
+    command: `npm run build && node scripts/serve-static.mjs --port 3200 --base ${BASE} --dir out`,
+    url: `http://127.0.0.1:3200${BASE}/`,
     reuseExistingServer: false,
-    timeout: 120_000,
+    timeout: 240_000,
   },
 });

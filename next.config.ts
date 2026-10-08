@@ -1,35 +1,19 @@
 import type { NextConfig } from "next";
 
-const dev = process.env.NODE_ENV !== "production";
-// Emails are shown as escaped text only; the CSP is a second line of defence (no remote resources, no framing).
-const csp = [
-  "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${dev ? " 'unsafe-eval'" : ""}`,
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
-  "font-src 'self' data:",
-  `connect-src 'self'${dev ? " ws: wss:" : ""}`,
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-].join("; ");
+// Static export for GitHub Pages: no server, no API routes. See src/lib/config.ts.
+const REPO = "employee-email-kpi-analyzer";
+const production = process.env.NODE_ENV === "production";
+// Production builds are served under /<repo>; override with BASE_PATH="" for a root-hosted build.
+const basePath = process.env.BASE_PATH ?? (production ? `/${REPO}` : "");
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["better-sqlite3", "exceljs"],
-  async headers() {
-    return [
-      {
-        source: "/:path*",
-        headers: [
-          { key: "Content-Security-Policy", value: csp },
-          { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "Referrer-Policy", value: "no-referrer" },
-          { key: "X-Frame-Options", value: "DENY" },
-        ],
-      },
-    ];
-  },
+  output: "export",
+  basePath,
+  assetPrefix: basePath || undefined,
+  trailingSlash: true, // /settings/ -> settings/index.html, so refreshing a page works on static hosting
+  images: { unoptimized: true },
+  env: { NEXT_PUBLIC_BASE_PATH: basePath },
+  reactStrictMode: true,
 };
 
 export default nextConfig;

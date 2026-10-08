@@ -5,22 +5,22 @@ coverage
 *.tsbuildinfo
 next-env.d.ts
 
-# environment & secrets
+# environment & secrets (none are needed, but never commit them)
 .env
 .env.*
-!.env.example
 
-# local databases (may contain company / personal data)
+# real data must never be committed: local databases, exported backups, spreadsheets with real employees/emails
 *.db
 *.db-journal
+*.sqlite
 data/
-prisma/*.db
+employee-email-kpi-backup-*.json
+*-backup-*.json
 
-# generated
-src/generated
+# test output
+test-results
+playwright-report
 
 # misc
 .DS_Store
 npm-debug.log*
-test-results
-playwright-report
