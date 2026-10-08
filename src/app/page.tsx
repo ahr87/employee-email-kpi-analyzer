@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { ClipboardPaste, AlertCircle } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { useQuery } from "@/lib/client";
 import { useMonth } from "@/components/month";
 import { Button, Card, CardHeader, EmptyState, ErrorState, Spinner, Badge } from "@/components/ui";
@@ -8,6 +8,9 @@ import { ClassPie, EmployeeStackedBar, TrendStack, VolumeVsQuality } from "@/com
 import { EmployeeTable, ratingStyle } from "@/components/employee-table";
 import { MONTH_NAMES } from "@/lib/types";
 import { dashboard, isEmptyApp, trend as loadTrend } from "@/lib/reports/aggregate";
+import { listBatches } from "@/lib/import/batches";
+import { SourceBadge } from "@/components/batches-table";
+import { fmtDate } from "@/lib/client";
 
 
 function Stat({ label, value, href, tone, sub, highlight }: { label: string; value: number; href?: string; tone?: string; sub?: string; highlight?: boolean }) {
@@ -25,7 +28,7 @@ const STEPS: [string, string, string, string][] = [
   ["1", "Add or import your employees", "Match senders to people by e-mail address (CSV or Excel import is supported).", "/employees"],
   ["2", "Set your NMC addresses", "So replies and forwards from NMC are recognised as evidence.", "/settings"],
   ["3", "Select the month", "Use the year / month selector at the top of every page.", ""],
-  ["4", "Paste Outlook emails", "Copy emails (ideally whole conversations) in Outlook and paste them.", "/import"],
+  ["4", "Import Outlook emails", "Import the JSON file written by the Outlook exporter — or copy emails (ideally whole conversations) in Outlook and paste them.", "/import-outlook"],
   ["5", "Analyze", "Parsing, classification and duplicate detection run on your computer.", "/import"],
   ["6", "Review uncertain results", "Confirm or change anything the app was not sure about.", "/review"],
   ["7", "Generate the report", "Monthly KPI per employee, exported to Excel or CSV.", "/reports"],
@@ -53,7 +56,7 @@ function FirstRun() {
 
 export default function Dashboard() {
   const { year, month, ready } = useMonth();
-  const { data, error, loading, reload } = useQuery(ready ? `dash:${year}:${month}` : null, async () => ({ stats: await dashboard(year, month), first: await isEmptyApp() }));
+  const { data, error, loading, reload } = useQuery(ready ? `dash:${year}:${month}` : null, async () => ({ stats: await dashboard(year, month), first: await isEmptyApp(), batches: await listBatches(year, month) }));
   const trend = useQuery(ready ? `trend:${year}` : null, async () => ({ months: await loadTrend(year) }));
 
   const header = (
@@ -62,7 +65,6 @@ export default function Dashboard() {
         <h1 className="text-2xl font-semibold">Employee Email KPI</h1>
         <p className="text-sm text-slate-500">Month: <strong>{MONTH_NAMES[month - 1]} {year}</strong>{data ? ` · ${data.stats.batches} batch(es) imported` : ""}</p>
       </div>
-      <Link href="/import"><Button><ClipboardPaste className="h-4 w-4" />Paste Outlook emails</Button></Link>
     </div>
   );
   if (!ready || loading) return <>{header}<Spinner /></>;
@@ -72,7 +74,7 @@ export default function Dashboard() {
   if (d.totalEmails === 0 && d.needsReview === 0) {
     return (
       <>{header}
-        <Card><EmptyState title="No emails analyzed for this month yet" hint="Copy emails from Outlook, paste them on the import page and click Analyze. Or load the synthetic demo data from Settings to explore the app." action={<Link href="/import"><Button>Paste &amp; Analyze</Button></Link>} /></Card>
+        <Card><EmptyState title="No emails analyzed for this month yet" hint="Copy emails from Outlook, paste them on the import page and click Analyze. Or load the synthetic demo data from Settings to explore the app." action={<div className="flex gap-2"><Link href="/import-outlook"><Button>Import Outlook Export</Button></Link><Link href="/import"><Button variant="secondary">Paste &amp; Analyze</Button></Link></div>} /></Card>
       </>
     );
   }
@@ -98,7 +100,23 @@ export default function Dashboard() {
         <Stat label="Unmatched" value={d.unmatched} href="/review" tone="text-red-700" sub="sender not in Employees" />
         <Stat label="Review Required" value={d.needsReview} href="/review" tone={d.needsReview ? "text-red-700" : "text-emerald-700"} sub={d.needsReview ? "click to resolve" : "all clear"} highlight={d.needsReview > 0} />
       </div>
-      <p className="-mt-2 text-xs text-slate-400">{d.nmcMessages} NMC message(s) used as evidence · counts show employee emails only (replies and follow-ups are not counted).</p>
+      {data.batches.length > 0 && (
+        <Card>
+          <CardHeader title="Data sources for this month" />
+          <ul className="divide-y divide-slate-100 text-sm">
+            {data.batches.map((b) => (
+              <li key={b.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
+                <SourceBadge source={b.source} />
+                <span className="font-medium">Batch {String(b.number).padStart(3, "0")}</span>
+                {b.filename && <span className="max-w-72 truncate text-slate-500" title={b.filename}>{b.filename}</span>}
+                <span className="text-slate-500">imported {fmtDate(b.createdAt).slice(0, 10)}</span>
+                <span className="text-slate-500">{b.totalParsed} message(s){b.inMonth !== b.totalParsed ? `, ${b.inMonth} in this month` : ""}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+      <p className="-mt-2 text-xs text-slate-400">{d.nmcMessages} NMC message(s) used as evidence · counts show employee emails only (replies and follow-ups are not counted).{d.externalMessages ? ` ${d.externalMessages} message(s) from other senders (not configured employees) are kept as evidence only.` : ""}</p>
 
       <div className="grid gap-5 lg:grid-cols-3">
         <Card><CardHeader title={`Outcome of ${d.totalEmails} emails (${useful} useful)`} /><div className="p-2"><ClassPie counts={d.counts} /></div></Card>

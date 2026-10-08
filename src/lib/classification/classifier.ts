@@ -25,6 +25,8 @@ export interface ThreadMessage {
 export interface ClassificationInput {
   email: {
     senderEmail: string;
+    /** Display name of the sender (used when recipients are display names without e-mail addresses, as in Outlook exports). */
+    senderName?: string;
     body: string;
     subject: string;
     sentAt: number | null;
@@ -109,6 +111,15 @@ export class RuleBasedClassifier implements EmailClassifier {
       const us = findPhrases(text, P.useful, { negation: true });
 
       if (m.isForward) { forward += 55; add("NMC forwarded the message (FW:)"); }
+      // Outlook exports list recipients by display name only: count other named recipients on a forward / escalation
+      if (!emailsIn(recipients).length && (m.isForward || esc.length)) {
+        const me = normalizeForAnalysis(email.senderName ?? "");
+        const others = recipients.split(";").map((x) => normalizeForAnalysis(x)).filter((x) => x && x !== me);
+        if (others.length) {
+          forward += 15; add(`NMC sent it on to ${others.length} other recipient(s)`);
+          if (teamRe && teamRe.test(recipients)) { forward += 10; add("recipient looks like a department/team"); }
+        }
+      }
       if (newRecipients.length && (m.isForward || esc.length || m.isReply)) {
         forward += m.isForward || esc.length ? 20 : 15;
         add(`NMC added recipient(s) outside the conversation (${newRecipients.slice(0, 2).join(", ")})`);

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { BarChart3, ClipboardCheck, FileText, LayoutDashboard, Mail, Search, Settings, Users, ClipboardPaste } from "lucide-react";
+import { BarChart3, FileJson, ClipboardCheck, FileText, LayoutDashboard, Mail, Search, Settings, Users, ClipboardPaste } from "lucide-react";
 import { GlobalMonthPicker, MonthProvider } from "./month";
 import { ToastProvider } from "./ui";
 import { getDb, storageWarning } from "@/lib/db";
@@ -72,7 +72,10 @@ export function Shell({ children }: { children: ReactNode }) {
               </form>
               <div className="ml-auto flex items-center gap-3">
                 <GlobalMonthPicker />
-                <Link href="/import" className="inline-flex items-center gap-1.5 rounded-md bg-blue-700 px-3.5 py-2 text-sm font-medium text-white hover:bg-blue-800">
+                <Link href="/import-outlook" className="inline-flex items-center gap-1.5 rounded-md bg-blue-700 px-3.5 py-2 text-sm font-medium text-white hover:bg-blue-800">
+                  <FileJson className="h-4 w-4" /> Import Outlook Export
+                </Link>
+                <Link href="/import" className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">
                   <ClipboardPaste className="h-4 w-4" /> Paste &amp; Analyze
                 </Link>
               </div>

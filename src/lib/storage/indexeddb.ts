@@ -2,7 +2,7 @@ import { StorageFullError, type StorageAdapter, type WriteOp } from "./storage";
 import { TABLES, type TableMap, type TableName } from "./types";
 
 const DB_NAME = "employee-email-kpi-analyzer";
-const DB_VERSION = 1;
+const DB_VERSION = 2; // v2 adds the "raw" store (original Outlook messages)
 
 const wrap = <T,>(req: IDBRequest<T>) =>
   new Promise<T>((resolve, reject) => {
@@ -47,6 +47,11 @@ export class IndexedDbAdapter implements StorageAdapter {
   async readAll<T extends TableName>(table: T): Promise<TableMap[T][]> {
     const tx = this.conn.transaction(table, "readonly");
     return wrap(tx.objectStore(table).getAll()) as Promise<TableMap[T][]>;
+  }
+
+  async get<T extends TableName>(table: T, id: string): Promise<TableMap[T] | undefined> {
+    const tx = this.conn.transaction(table, "readonly");
+    return wrap(tx.objectStore(table).get(id)) as Promise<TableMap[T] | undefined>;
   }
 
   async write(ops: WriteOp[]) {

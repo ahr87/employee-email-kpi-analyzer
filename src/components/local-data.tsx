@@ -13,6 +13,7 @@ export function LocalDataCard({ onChanged, version = 0 }: { onChanged: () => voi
   const summary = useQuery(`storage-summary:${version}`, storageSummary);
   const file = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const [withHtml, setWithHtml] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [pending, setPending] = useState<{ name: string; ok: Extract<BackupCheck, { ok: true }> } | null>(null);
   const [problems, setProblems] = useState<{ name: string; errors: string[] } | null>(null);
@@ -22,7 +23,7 @@ export function LocalDataCard({ onChanged, version = 0 }: { onChanged: () => voi
   async function doExport() {
     setBusy(true);
     try {
-      const { filename, json, summary: s } = await exportBackup();
+      const { filename, json, summary: s } = await exportBackup(new Date(), { includeOriginalHtml: withHtml });
       downloadFile(filename, json, JSON_MIME);
       toast("ok", `Backup exported (${s.emails} emails, ${s.employees} employees).`);
       summary.reload();
@@ -75,6 +76,7 @@ export function LocalDataCard({ onChanged, version = 0 }: { onChanged: () => voi
         )}
         <div className="flex flex-wrap gap-2">
           <Button onClick={doExport} disabled={busy}><Download className="h-4 w-4" />Export backup</Button>
+          <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={withHtml} onChange={(e) => setWithHtml(e.target.checked)} />Include original Outlook HTML (larger file)</label>
           <input ref={file} type="file" accept=".json,application/json" hidden aria-label="Backup file" onChange={(e) => e.target.files?.[0] && pick(e.target.files[0])} />
           <Button variant="secondary" onClick={() => file.current?.click()} disabled={busy}><Upload className="h-4 w-4" />Restore backup…</Button>
           <Button variant="danger" onClick={() => setClearing(true)} disabled={busy}><Trash2 className="h-4 w-4" />Clear all local data</Button>

@@ -19,6 +19,8 @@ export interface MonthlyStats {
   needsReview: number;
   outsideMonthPending: number;
   nmcMessages: number;
+  /** Outlook import: messages from senders that are not configured employees (evidence only, not counted). */
+  externalMessages: number;
   employees: EmployeeStat[];
 }
 
@@ -52,6 +54,7 @@ export async function monthlyStats(year: number, month: number): Promise<Monthly
     needsReview: inMonth.filter((e) => e.counted && e.reviewStatus === "NEEDS_REVIEW" && e.monthDecision !== "EXCLUDED").length,
     outsideMonthPending: inMonth.filter((e) => e.counted && e.monthDecision === "REVIEW").length,
     nmcMessages: inMonth.filter((e) => e.kind === "NMC").length,
+    externalMessages: inMonth.filter((e) => e.kind === "EXTERNAL").length,
     employees: rows,
   };
 }

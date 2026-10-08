@@ -24,7 +24,7 @@ export async function storageSummary(): Promise<StorageSummary> {
 /** Deletes email data (emails, batches, audit log). Optionally also employees and settings. */
 export async function resetData(opts: { employees?: boolean; settings?: boolean } = {}) {
   const db = await getDb();
-  await db.clearAll(["emails", "batches", "audit", ...(opts.employees ? (["employees"] as const) : []), ...(opts.settings ? (["settings"] as const) : [])]);
+  await db.clearAll(["emails", "raw", "batches", "audit", ...(opts.employees ? (["employees"] as const) : []), ...(opts.settings ? (["settings"] as const) : [])]);
   await logAudit("DATA_RESET", "System", "", `Local data reset (emails${opts.employees ? ", employees" : ""}${opts.settings ? ", settings" : ""})`, opts);
 }
 
@@ -43,7 +43,7 @@ export async function deleteMonthDataset(year: number, month: number) {
   const relinked = db.emails.all()
     .filter((e) => !gone.has(e.id) && ((e.duplicateOfId && gone.has(e.duplicateOfId)) || (e.possibleDuplicateOfId && gone.has(e.possibleDuplicateOfId))))
     .map((e) => ({ ...e, duplicateOfId: e.duplicateOfId && gone.has(e.duplicateOfId) ? null : e.duplicateOfId, possibleDuplicateOfId: e.possibleDuplicateOfId && gone.has(e.possibleDuplicateOfId) ? null : e.possibleDuplicateOfId }));
-  await db.apply([{ table: "emails", delete: [...gone], put: relinked }, { table: "batches", delete: batches.map((b) => b.id) }]);
+  await db.apply([{ table: "emails", delete: [...gone], put: relinked }, { table: "raw", delete: [...gone] }, { table: "batches", delete: batches.map((b) => b.id) }]);
   await logAudit("DATASET_DELETED", "Month", `${year}-${month}`, `Dataset ${year}-${String(month).padStart(2, "0")} deleted (${emails.length} emails)`, { year, month, emails: emails.length });
   return emails.length;
 }

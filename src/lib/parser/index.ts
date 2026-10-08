@@ -14,11 +14,11 @@ type HeaderKey = "from" | "sent" | "to" | "cc" | "subject" | "messageId" | "igno
  * (إ/أ/ا, ى/ي, ة/ه) and bidi marks do not matter. "ignore" labels are consumed but not stored.
  */
 const LABELS: Record<HeaderKey, string[]> = {
-  from: ["from", "sender", "من", "المرسل"],
-  sent: ["sent", "date", "received", "sent on", "sent date", "تم الإرسال", "تاريخ الإرسال", "التاريخ", "تاريخ", "أرسلت", "تم الارسال"],
-  to: ["to", "إلى", "الى", "إلي", "الي"],
+  from: ["from", "sender", "من", "المرسل", "de", "von", "expéditeur", "expediteur", "remitente"],
+  sent: ["sent", "date", "received", "sent on", "sent date", "تم الإرسال", "تاريخ الإرسال", "التاريخ", "تاريخ", "أرسلت", "تم الارسال", "envoyé", "envoye", "gesendet", "datum", "enviado", "fecha"],
+  to: ["to", "إلى", "الى", "إلي", "الي", "à", "a", "an", "para"],
   cc: ["cc", "نسخة", "نسخة إلى", "نسخة الى", "نسخه"],
-  subject: ["subject", "الموضوع", "موضوع"],
+  subject: ["subject", "الموضوع", "موضوع", "objet", "betreff", "asunto"],
   messageId: ["message-id", "message id"],
   ignore: ["importance", "priority", "sensitivity", "attachments", "attachment", "categories", "bcc", "reply-to", "الأهمية", "الاهمية", "أهمية", "المرفقات", "مرفقات", "نسخة مخفية", "when", "where"],
 };
@@ -26,9 +26,9 @@ const LABEL_LOOKUP = new Map<string, HeaderKey>();
 for (const [k, arr] of Object.entries(LABELS)) for (const l of arr) LABEL_LOOKUP.set(normalizeForAnalysis(l), k as HeaderKey);
 
 const HEADER_RE = /^[\s>*_]*([^\s:：][^:：]{0,24}?)[\s*_]*[:：][\s*_]*(.*)$/;
-const QUOTE_MARKER_RE =
+export const QUOTE_MARKER_RE =
   /^\s*(-{2,}\s*(original message|forwarded message|الرسالة الأصلية|رسالة معاد توجيهها|الرسالة المعاد توجيهها)[^\n]*|-{5,}\s*forwarded message\s*-{5,}|_{5,}|begin forwarded message:?|on .{5,140} wrote:|في .{5,140} كتب:?)\s*$/i;
-const HARD_SEP_RE = /^\s*([=#*~]{5,}|-{5,}\s*(email|message)\s*#?\d+\s*-{5,}|-{3,}\s*next email\s*-{3,})\s*$/i;
+export const HARD_SEP_RE = /^\s*([=#*~]{5,}|-{5,}\s*(email|message)\s*#?\d+\s*-{5,}|-{3,}\s*next email\s*-{3,})\s*$/i;
 const EMAIL_RE = /[A-Z0-9._%+'-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const INVISIBLE = /[​-‏‪-‮⁦-⁩﻿]/g;
 const clean = (s: string) => s.replace(INVISIBLE, "").trim();
@@ -44,7 +44,7 @@ function headerOf(rawLine: string, viewLine: string): Header | null {
   return { key, valueView: m[2].trim(), valueRaw: rawLine.slice(rawLine.length - n).trim() };
 }
 
-interface Block {
+export interface Block {
   start: number;
   end: number; // first line after the header block
   fields: Partial<Record<HeaderKey, { view: string; raw: string }>>;
@@ -139,7 +139,7 @@ export function parseAddress(value: string): { name: string; email: string } {
 const FWD_PREFIX = /^\s*((fw|fwd|forward)\s*(\[\d+\])?\s*:|إعادة توجيه\s*:|اعادة توجيه\s*:|احالة\s*:|إحالة\s*:|تحويل\s*:|محول\s*:)/i;
 const RE_PREFIX = /^\s*((re|aw|sv)\s*(\[\d+\])?\s*:|رد\s*:|ردّ\s*:|الرد\s*:)/i;
 
-function prefixFlags(subject: string) {
+export function prefixFlags(subject: string) {
   return { isForward: FWD_PREFIX.test(subject), isReply: RE_PREFIX.test(subject) };
 }
 
@@ -211,10 +211,28 @@ function parseListRows(lines: string[], opts: ParseOptions): ParsedEmail[] | nul
 }
 
 /** Lines that only introduce quoted content and belong to neither message body. */
-const isTrailer = (raw: string) => {
+export const isTrailer = (raw: string) => {
   const v = parseView(raw);
   return !v.trim() || QUOTE_MARKER_RE.test(v) || HARD_SEP_RE.test(v) || /^\s*[-_=*]{3,}\s*$/.test(v);
 };
+
+/** Finds every header block (From / Sent / To / Cc / Subject) in the text. Shared by the paste parser and the Outlook quoted-history detector. */
+export function locateBlocks(raw: string[], view: string[]): Block[] {
+  const found: Block[] = [];
+  for (let i = 0; i < raw.length; ) {
+    const h = headerOf(raw[i], view[i]);
+    if (h && h.key === "from") {
+      const b = readHeader(raw, view, i);
+      if (b) {
+        found.push({ ...b, quoted: found.length > 0 && isQuotedStart(raw, i) });
+        i = b.end;
+        continue;
+      }
+    }
+    i++;
+  }
+  return found;
+}
 
 /**
  * Parses text copied from Outlook (plain text, rich text or HTML) into individual messages.
@@ -227,33 +245,16 @@ export function parseEmails(input: string, opts: ParseOptions = {}): ParseResult
   let text = (input ?? "").replace(/\r\n?/g, "\n");
   if (!text.trim()) return { emails: [], warnings: ["Nothing to parse: the pasted text is empty."] };
 
-  const locate = (raw: string[], view: string[]): Block[] => {
-    const found: Block[] = [];
-    for (let i = 0; i < raw.length; ) {
-      const h = headerOf(raw[i], view[i]);
-      if (h && h.key === "from") {
-        const b = readHeader(raw, view, i);
-        if (b) {
-          found.push({ ...b, quoted: found.length > 0 && isQuotedStart(raw, i) });
-          i = b.end;
-          continue;
-        }
-      }
-      i++;
-    }
-    return found;
-  };
-
   // Plain text first (keeps the pasted characters exactly). Only when no headers are found and the paste looks like
   // HTML source is it converted to safe text (scripts/styles/comments removed, tags stripped, entities decoded).
   let raw = text.split("\n");
   let view = raw.map(parseView);
-  let blocks = locate(raw, view);
+  let blocks = locateBlocks(raw, view);
   if (blocks.length === 0 && looksLikeHtml(text)) {
     text = htmlToText(text);
     raw = text.split("\n");
     view = raw.map(parseView);
-    blocks = locate(raw, view);
+    blocks = locateBlocks(raw, view);
     warnings.push("Pasted content contained HTML; it was converted to safe plain text (scripts and styles removed).");
   }
 

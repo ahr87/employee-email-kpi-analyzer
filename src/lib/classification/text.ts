@@ -1,3 +1,5 @@
+import { stripSignatureText } from "../outlook/signature";
+
 /** Shared text helpers for classification and duplicate detection. */
 
 export function conversationKey(subject: string): string {
@@ -17,6 +19,5 @@ export function stripQuoted(body: string): string {
 
 /** Body without the closing signature / disclaimer, so names, company and job titles never act as "locations". */
 export function stripSignature(body: string): string {
-  const m = body.match(/^[ \t>]*(best regards|kind regards|warm regards|with regards|regards|thanks and regards|thanks|thank you|sincerely|cheers|مع التحية|مع تحياتي|تحياتي|وتفضلوا|شكرا|شكراً|--+\s*$|sent from my)\b.*$/im);
-  return m && m.index !== undefined && m.index > 0 ? body.slice(0, m.index) : body;
+  return stripSignatureText(body);
 }

@@ -28,7 +28,14 @@ export interface BatchRec {
   autoClassified: number;
   needsReview: number;
   warnings: string; // JSON array of strings
-  status: string; // COMPLETED | ANALYSIS_FAILED
+  status: string; // IMPORTING | COMPLETED | ANALYSIS_FAILED
+  source: string; // "Paste" | "Outlook Desktop"
+  filename: string | null; // Outlook export file name
+  exportedAt: Date | null; // when the Outlook exporter wrote the file
+  dateFrom: Date | null; // first / last message time in the batch
+  dateTo: Date | null;
+  uniqueSenders: number;
+  uniqueConversations: number;
 }
 
 export interface EmailRec {
@@ -60,7 +67,14 @@ export interface EmailRec {
   ipAddresses: string;
   devices: string;
   quoted: boolean;
-  kind: string; // REPORT | FOLLOW_UP | NMC
+  /** Outlook import: EntryID of the message (strongest exact-duplicate key) and Outlook's ConversationID. */
+  externalMessageId: string | null;
+  externalConversationId: string | null;
+  /** Outlook import: hash of conversationId + minute + sender + subject (second duplicate tier); "" for pasted emails. */
+  extKey: string;
+  /** JSON: how the analysis copy was derived (plain/html, quoted history and signature sizes). "{}" for pasted emails. */
+  normalization: string;
+  kind: string; // REPORT | FOLLOW_UP | NMC | EXTERNAL
   counted: boolean;
   outsideMonth: boolean;
   monthDecision: string; // IN_MONTH | INCLUDED | EXCLUDED | REVIEW
@@ -99,12 +113,33 @@ export interface SettingRec {
   value: unknown;
 }
 
+/** The original Outlook message, exactly as exported (known fields only). Loaded on demand, never held in memory. */
+export interface RawRec {
+  id: string; // = the email's id
+  batchId: string;
+  entryId: string;
+  conversationId: string | null;
+  subject: string;
+  from: string;
+  fromEmail: string;
+  to: string;
+  cc: string;
+  receivedAt: string; // as written in the file
+  body: string; // original plain-text body, including quoted history and signature
+  htmlGz: Uint8Array | null; // original HTML body, gzip-compressed
+  html: string | null; // original HTML body when compression is unavailable
+  htmlChars: number;
+}
+
 export interface TableMap {
   employees: EmployeeRec;
   batches: BatchRec;
   emails: EmailRec;
   audit: AuditRec;
   settings: SettingRec;
+  raw: RawRec;
 }
 export type TableName = keyof TableMap;
-export const TABLES: TableName[] = ["employees", "batches", "emails", "audit", "settings"];
+export const TABLES: TableName[] = ["employees", "batches", "emails", "audit", "settings", "raw"];
+/** Tables held in memory. `raw` (original Outlook messages) is read on demand. */
+export const PRELOADED: TableName[] = ["employees", "batches", "emails", "audit", "settings"];

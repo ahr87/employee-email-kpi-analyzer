@@ -33,7 +33,7 @@ describe("backup / restore", () => {
     expect(backupFilename(new Date("2026-10-08T23:00:00Z"))).toBe("employee-email-kpi-backup-2026-10-08.json");
     const file = JSON.parse(json);
     expect(Object.keys(file)).toEqual(["format", "version", "exportedAt", "app", "data"]);
-    expect(Object.keys(file.data)).toEqual(["employees", "batches", "emails", "audit", "settings"]);
+    expect(Object.keys(file.data)).toEqual(["employees", "batches", "emails", "audit", "settings", "raw"]);
     expect(summary).toMatchObject({ employees: 1, batches: 1, emails: 3, months: 1 });
     expect(file.data.settings.nmcAddresses[0].address).toBe("nmc@acme.test");
     expect(json).not.toMatch(/eka\.month|localStorage|toast/);

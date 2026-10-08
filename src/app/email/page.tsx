@@ -1,12 +1,47 @@
 "use client";
 import Link from "next/link";
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { fmtDate, useQuery } from "@/lib/client";
 import { getEmailDetail } from "@/lib/import/emails";
 import { listEmployees } from "@/lib/employees/service";
 import { Badge, Button, Card, CardHeader, ClassBadge, ConfBadge, ErrorState, Spinner } from "@/components/ui";
 import { EmailActions, ReasonBadges } from "@/components/email-actions";
+import { SourceBadge } from "@/components/batches-table";
+import { getDb } from "@/lib/db";
+import { gunzip } from "@/lib/utils/gzip";
+import type { RawRec } from "@/lib/storage/types";
+
+/** The original Outlook message, loaded on demand. HTML is only ever shown as escaped text — never rendered. */
+function OriginalMessage({ id, normalization }: { id: string; normalization: string }) {
+  const [raw, setRaw] = useState<RawRec | null>(null);
+  const [html, setHtml] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  let info: Record<string, unknown> = {};
+  try { info = normalization ? JSON.parse(normalization) : {}; } catch { /* old record */ }
+  const load = async () => {
+    try {
+      const r = await (await getDb()).getRaw(id);
+      if (!r) { setErr("The original message is not stored (it was not included when this data was restored)."); return; }
+      setRaw(r);
+      setHtml(r.html ?? (r.htmlGz ? await gunzip(r.htmlGz) : ""));
+    } catch (e) { setErr(e instanceof Error ? e.message : "Could not load the original message."); }
+  };
+  return (
+    <details className="mt-3" onToggle={(ev) => { if ((ev.target as HTMLDetailsElement).open && !raw && !err) void load(); }}>
+      <summary className="cursor-pointer text-xs text-slate-500">Original Outlook message (as exported)</summary>
+      <div className="mt-2 space-y-2 text-xs">
+        <p className="text-slate-500">Analysis used {String(info.source ?? "plain")} text{Number(info.quotedChars) > 0 ? `, ignoring ${info.quotedChars} characters of quoted history` : ""}{Number(info.signatureChars) > 0 ? ` and ${info.signatureChars} characters of signature` : ""}.</p>
+        {err && <p className="text-red-700">{err}</p>}
+        {raw && (<>
+          <p className="text-slate-500">entryId <code>{raw.entryId}</code> · conversationId <code>{raw.conversationId ?? "—"}</code> · received {raw.receivedAt}</p>
+          <pre className="max-h-72 overflow-auto rounded bg-slate-900 p-3 break-words whitespace-pre-wrap text-slate-100">{raw.body || "(empty plain body)"}</pre>
+          {html && <details><summary className="cursor-pointer text-slate-500">HTML source (shown as text, not rendered)</summary><pre className="mt-1 max-h-72 overflow-auto rounded bg-slate-900 p-3 break-words whitespace-pre-wrap text-slate-100">{html}</pre></details>}
+        </>)}
+      </div>
+    </details>
+  );
+}
 
 
 const Row = ({ k, children }: { k: string; children: React.ReactNode }) => (
@@ -38,13 +73,16 @@ function EmailDetail() {
             <Row k="To">{e.toRecipients}</Row>
             <Row k="CC">{e.ccRecipients}</Row>
             <Row k="Batch">Batch {e.batch.number} · imported {fmtDate(e.batch.createdAt)}{e.quoted && <Badge className="ml-2 bg-slate-100 text-slate-600">found inside a reply chain</Badge>}</Row>
-            <Row k="In the KPI">{e.kind === "REPORT" ? "Yes — counted as an employee email" : e.kind === "NMC" ? "No — NMC message, used as evidence" : "No — follow-up message, used as evidence"}</Row>
+            <Row k="Source"><SourceBadge source={e.batch.source} />{e.batch.filename && <span className="ml-2 text-xs text-slate-500">{e.batch.filename}</span>}</Row>
+            <Row k="In the KPI">{e.kind === "REPORT" ? "Yes — counted as an employee email" : e.kind === "NMC" ? "No — NMC message, used as evidence" : e.kind === "EXTERNAL" ? "No — sender is not a configured employee or NMC address (evidence only)" : "No — follow-up message, used as evidence"}</Row>
             {uncertain.length > 0 && <Row k="Parser unsure"><span className="text-amber-700">{uncertain.join(", ")}</span></Row>}
           </dl>
           <div className="border-t border-slate-100 p-4">
             <pre className="max-h-96 overflow-auto rounded bg-slate-50 p-3 text-xs break-words whitespace-pre-wrap">{e.body || "(empty body)"}</pre>
-            <details className="mt-3"><summary className="cursor-pointer text-xs text-slate-500">Raw pasted source</summary>
-              <pre className="mt-2 max-h-72 overflow-auto rounded bg-slate-900 p-3 text-xs break-words whitespace-pre-wrap text-slate-100">{e.rawSource}</pre></details>
+            {e.externalMessageId ? <OriginalMessage id={e.id} normalization={e.normalization} /> : (
+              <details className="mt-3"><summary className="cursor-pointer text-xs text-slate-500">Raw pasted source</summary>
+                <pre className="mt-2 max-h-72 overflow-auto rounded bg-slate-900 p-3 text-xs break-words whitespace-pre-wrap text-slate-100">{e.rawSource}</pre></details>
+            )}
           </div>
         </Card>
 

@@ -85,6 +85,34 @@ Everything you enter — employees, pasted emails, classifications, manual decis
 
 After the first visit a service worker caches the app (pages and scripts), so it opens and works without internet: analyze pasted emails, review, KPI, search, filter, Excel/CSV export and backups all run locally. A new deployment is picked up the next time you are online.
 
+## Importing an Outlook Desktop export (JSON)
+
+Besides **Paste & Analyze**, **Import Outlook Export** reads the JSON file written by the Outlook VBA exporter (`KPI_Outlook_Export_YYYYMMDD_HHMMSS.json`). Everything happens in the browser; the file is never uploaded.
+
+```json
+{ "exportedAt": "…", "source": "Outlook Desktop",
+  "emails": [ { "entryId": "…", "conversationId": "…", "subject": "…", "from": "…", "fromEmail": "…",
+                "to": "…", "cc": "…", "receivedAt": "…", "body": "…", "htmlBody": "…" } ] }
+```
+
+**Workflow.** Choose file → *preview* (messages, valid/invalid, date range, senders, conversations, employees matched/unmatched, potential duplicates, quoted/signature/HTML counts; invalid messages are listed and never block the rest) → **Import & Analyze** (chunked, with progress and cancel). Clearly invalid files (not JSON, wrong `source`, no `emails`) are rejected with a message. Every import creates a batch (source *Outlook Desktop*, file name, date range, message/sender/conversation counts) shown on the Import page, the Emails list and the Dashboard.
+
+**Normalization.** The original message (plain + HTML) is stored untouched in a separate `raw` table (HTML gzip-compressed, loaded lazily). Analysis uses a *normalized copy*: plain body (or the HTML converted to safe text when the plain body is empty/much shorter — script/style/head dropped, tables become tab-separated rows, unsafe links removed, HTML is never rendered) → quoted history removed → signature/disclaimer removed. Ticket numbers, host names, IPs, circuits and locations are extracted from the normalized text, including HTML tables (`DeviceName / Problem / ZbxProStart / TicketNO`).
+
+**Quoted/previous messages.** A reusable detector (`src/lib/outlook/quoted.ts`) cuts at separator lines + `From/Sent/To/Cc/Subject` header blocks (English, Arabic, French, German, Spanish), `On … wrote:`, `-----Original Message-----`, *Begin forwarded message* and `>` runs. Quoted history is not counted as new emails or KPI activity. The top-level `fromEmail` is always the sender — an embedded `From:` in a forwarded body is quoted content.
+
+**Duplicate prevention.** Priority: `entryId` → `conversationId + received minute + sender + subject` → content hash → quoted-copy/Message-ID checks → the existing semantic duplicate detection. The same file twice, or the same message in two files, imports nothing new.
+
+**Employee matching.** By `fromEmail` only (display-name fallback is disabled for Outlook messages). Senders that are neither employees nor configured NMC addresses are kept as *evidence only* (kind `EXTERNAL`, listed under *Other senders*); they are not counted in any employee KPI and do not flood Review. NMC messages are evidence, linked by `conversationId` (strongest key, stored as `externalConversationId`, falling back to subject), subject, timestamp order and the NMC addresses in Settings.
+
+**Months.** `receivedAt` is authoritative. Default mode: each message goes to the month it was received (a multi-month export fills several months). Alternative: only the selected month counts; others are stored and listed in Review ("outside selected month"). Offsets in ISO timestamps are converted to your local time; naive timestamps are used as written.
+
+**Large files.** The file is streamed in chunks and handled one message at a time (two passes: preview, then import); 5,000 synthetic messages are covered by an automated test.
+
+**Backup.** Backups include the original Outlook plain bodies/headers; the original HTML is added only if you tick *Include original Outlook HTML*.
+
+> **Compatibility.** The reader is written against the documented structure above and tested with *anonymized synthetic* files that mimic it (BOM, CRLF, raw control characters, Arabic UTF-8, HTML tables, signatures, quoted history). It has **not** been tested with a real Outlook export file in this repository — verify with your own file's preview first.
+
 ## Daily workflow
 
 1. **Employees** – add or import your employees once (CSV/Excel: `Employee ID, Employee Name, Email Address, Department, Team, Active`; export any time). The sender **e-mail address** is the matching key (case-insensitive). If Outlook copied only a display name, a *unique exact name* match is accepted as a fallback.

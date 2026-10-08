@@ -19,7 +19,9 @@ export const emailFilterSchema = z.object({
   batchId: z.string().optional(),
   unmatched: z.boolean().optional(),
   /** counted = the emails that enter the KPI; followups / nmc = conversation evidence; all = everything */
-  view: z.enum(["counted", "followups", "nmc", "all"]).default("counted"),
+  view: z.enum(["counted", "followups", "nmc", "external", "all"]).default("counted"),
+  /** Where the email came from: a pasted text or an Outlook export file. */
+  source: z.enum(["Paste", "Outlook Desktop"]).optional(),
   sort: z.enum(["sentAt", "subject", "confidence", "finalClass", "employee"]).default("sentAt"),
   dir: z.enum(["asc", "desc"]).default("desc"),
   page: z.number().int().min(1).default(1),
@@ -30,7 +32,7 @@ export type EmailFilter = z.input<typeof emailFilterSchema>;
 export interface EmployeeRef { id: string; name: string; email: string; department: string; team: string }
 export interface EmailSummary extends EmailRec {
   employee: EmployeeRef | null;
-  batch: { number: number } | null;
+  batch: { number: number; source: string; filename: string | null } | null;
   duplicateOf: { id: string; subject: string; sentAt: Date | null; senderName: string; employee: { name: string } | null } | null;
 }
 
@@ -44,7 +46,7 @@ async function summarize(rows: EmailRec[]): Promise<EmailSummary[]> {
     return {
       ...e,
       employee: ref(db.employees.get(e.employeeId)),
-      batch: db.batches.get(e.batchId) ? { number: db.batches.get(e.batchId)!.number } : null,
+      batch: db.batches.get(e.batchId) ? { number: db.batches.get(e.batchId)!.number, source: db.batches.get(e.batchId)!.source ?? "Paste", filename: db.batches.get(e.batchId)!.filename ?? null } : null,
       duplicateOf: orig ? { id: orig.id, subject: orig.subject, sentAt: orig.sentAt, senderName: orig.senderName, employee: origEmp ? { name: origEmp.name } : null } : null,
     };
   });
@@ -71,6 +73,8 @@ export async function listEmails(raw: EmailFilter = {}) {
     if (f.view === "counted" && !e.counted) return false;
     if (f.view === "followups" && e.kind !== "FOLLOW_UP") return false;
     if (f.view === "nmc" && e.kind !== "NMC") return false;
+    if (f.view === "external" && e.kind !== "EXTERNAL") return false;
+    if (f.source && (db.batches.get(e.batchId)?.source ?? "Paste") !== f.source) return false;
     if (f.department || f.team) {
       const emp = empOf(e);
       if (f.department && emp?.department !== f.department) return false;
@@ -122,7 +126,7 @@ export async function getEmailDetail(id: string) {
     : [];
   const audit = await listAudit({ entityType: "Email", entityId: id });
   return {
-    email: { ...full, batch: { number: batch?.number ?? 0, createdAt: batch?.createdAt ?? email.createdAt }, duplicates },
+    email: { ...full, batch: { number: batch?.number ?? 0, createdAt: batch?.createdAt ?? email.createdAt, source: batch?.source ?? "Paste", filename: batch?.filename ?? null }, duplicates },
     possible, thread, audit,
   };
 }

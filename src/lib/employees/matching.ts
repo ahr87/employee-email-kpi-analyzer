@@ -14,6 +14,7 @@ const normName = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ")
 export function matchEmployee<T extends MatchableEmployee>(
   sender: { email: string; name: string },
   employees: T[],
+  opts: { allowNameFallback?: boolean } = {},
 ): MatchResult<T> {
   const email = sender.email.trim().toLowerCase();
   if (email) {
@@ -21,7 +22,7 @@ export function matchEmployee<T extends MatchableEmployee>(
     return hit ? { employee: hit, by: "email" } : { employee: null, by: null };
   }
   const n = normName(sender.name);
-  if (n) {
+  if (n && opts.allowNameFallback !== false) {
     const hits = employees.filter((e) => normName(e.name) === n);
     if (hits.length === 1) return { employee: hits[0], by: "name" };
   }

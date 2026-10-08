@@ -1,4 +1,4 @@
-import type { TableMap, TableName } from "./types";
+import { TABLES, type TableMap, type TableName } from "./types";
 
 /** One atomic change to a table. */
 export type WriteOp<T extends TableName = TableName> = { table: T; put?: TableMap[T][]; delete?: string[] };
@@ -11,6 +11,8 @@ export interface StorageAdapter {
   readonly kind: "indexeddb" | "memory";
   init(): Promise<void>;
   readAll<T extends TableName>(table: T): Promise<TableMap[T][]>;
+  /** Reads one record by key without loading the table. */
+  get<T extends TableName>(table: T, id: string): Promise<TableMap[T] | undefined>;
   /** Applies all operations in ONE transaction: either everything is stored or nothing. */
   write(ops: WriteOp[]): Promise<void>;
   /** Deletes every record of the given tables (all tables when omitted). */
@@ -38,6 +40,10 @@ export class MemoryAdapter implements StorageAdapter {
   async readAll<T extends TableName>(table: T) {
     return [...this.t(table).values()].map((v) => structuredClone(v)) as TableMap[T][];
   }
+  async get<T extends TableName>(table: T, id: string) {
+    const v = this.t(table).get(id);
+    return v === undefined ? undefined : (structuredClone(v) as TableMap[T]);
+  }
   async write(ops: WriteOp[]) {
     for (const op of ops) {
       const m = this.t(op.table);
@@ -46,7 +52,7 @@ export class MemoryAdapter implements StorageAdapter {
     }
   }
   async clear(tables?: TableName[]) {
-    for (const t of tables ?? (["employees", "batches", "emails", "audit", "settings"] as TableName[])) this.t(t).clear();
+    for (const t of tables ?? TABLES) this.t(t).clear();
   }
   async usage() {
     let n = 0;

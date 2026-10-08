@@ -43,7 +43,7 @@ export async function emailDetailRows(year: number, month: number, onlyReview = 
       similarity: e.duplicateSimilarity ?? "",
       reviewStatus: e.reviewStatus === "NEEDS_REVIEW" ? "Needs review" : e.reviewStatus === "REVIEWED" ? "Reviewed" : "OK",
       reviewReasons: (JSON.parse(e.reviewReasons || "[]") as ReviewReason[]).map((r) => REVIEW_REASON_LABELS[r] ?? r).join("; "),
-      batch: db.batches.get(e.batchId)?.number ?? 0, monthDecision: e.monthDecision === "INCLUDED" ? "Included manually" : e.monthDecision === "IN_MONTH" ? "In month" : e.monthDecision,
+      batch: db.batches.get(e.batchId)?.number ?? 0, source: db.batches.get(e.batchId)?.source ?? "Paste", monthDecision: e.monthDecision === "INCLUDED" ? "Included manually" : e.monthDecision === "IN_MONTH" ? "In month" : e.monthDecision,
     };
   });
 }
@@ -119,8 +119,8 @@ export async function monthlyXlsx(year: number, month: number): Promise<Uint8Arr
   });
 
   // 3. Email Details (no bodies)
-  const detailHead = ["Date", "Employee", "Employee Email", "Department", "Team", "Subject", "Final Classification", "System Suggestion", "Confidence %", "Manual Decision", "Override Reason", "Reason", "Duplicate Of", "Similarity %", "Review Status", "Review Reasons", "Batch", "Month Decision"];
-  const widths = [17, 24, 28, 16, 16, 42, 22, 22, 12, 11, 24, 60, 42, 11, 14, 36, 8, 16];
+  const detailHead = ["Date", "Employee", "Employee Email", "Department", "Team", "Subject", "Final Classification", "System Suggestion", "Confidence %", "Manual Decision", "Override Reason", "Reason", "Duplicate Of", "Similarity %", "Review Status", "Review Reasons", "Batch", "Source", "Month Decision"];
+  const widths = [17, 24, 28, 16, 16, 42, 22, 22, 12, 11, 24, 60, 42, 11, 14, 36, 8, 15, 16];
   const fillDetail = async (ws: ExcelJS.Worksheet, onlyReview: boolean) => {
     ws.addRow(detailHead);
     for (const r of await emailDetailRows(year, month, onlyReview)) ws.addRow(Object.values(r));
@@ -140,7 +140,8 @@ export async function monthlyXlsx(year: number, month: number): Promise<Uint8Arr
   c.addRow(["Emails still needing review", stats.needsReview]);
   c.addRow(["Out-of-month emails awaiting a decision", stats.outsideMonthPending]);
   c.addRow(["NMC messages used as evidence", stats.nmcMessages]);
-  header(c, 1, [42, 12, 12], false);
+  c.addRow(["Messages from other senders (Outlook import, not counted)", stats.externalMessages]);
+  header(c, 1, [58, 12, 12], false);
   for (let r = 2; r <= 7; r++) c.getCell(r, 3).numFmt = "0.0%";
 
   // 5. Review Required

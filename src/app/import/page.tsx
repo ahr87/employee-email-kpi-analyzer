@@ -1,12 +1,12 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Trash2 } from "lucide-react";
-import { errorMessage, fmtDate, useQuery } from "@/lib/client";
+import { errorMessage, useQuery } from "@/lib/client";
 import { deleteBatch, importBatch, type ImportSummary } from "@/lib/import/importer";
 import { listBatches } from "@/lib/import/batches";
 import { MonthPicker, useMonth } from "@/components/month";
-import { Button, Card, CardHeader, EmptyState, Spinner, Td, Textarea, Th, useToast, Badge } from "@/components/ui";
+import { BatchesTable } from "@/components/batches-table";
+import { Button, Card, CardHeader, EmptyState, Spinner, Textarea, useToast } from "@/components/ui";
 import { MONTH_NAMES } from "@/lib/types";
 
 const SUMMARY_KEY = "eka.lastImport";
@@ -40,7 +40,7 @@ export default function ImportPage() {
     <div className="mx-auto max-w-5xl space-y-5">
       <div>
         <h1 className="text-2xl font-semibold">Paste &amp; Analyze</h1>
-        <p className="text-sm text-slate-500">Select emails in Outlook → copy → paste here → Analyze. Nothing is ever read from Outlook automatically; each paste is added as a new batch.</p>
+        <p className="text-sm text-slate-500">Select emails in Outlook → copy → paste here → Analyze. Nothing is ever read from Outlook automatically; each paste is added as a new batch. Have many emails? <Link className="text-blue-700 underline" href="/import-outlook">Import an Outlook export file</Link> instead.</p>
       </div>
       <Card>
         <CardHeader title="1. Choose the analysis month" action={<MonthPicker year={year} month={month} onChange={set} />} />
@@ -91,16 +91,7 @@ export default function ImportPage() {
       <Card>
         <CardHeader title={`Batches — ${MONTH_NAMES[month - 1]} ${year}`} />
         {batches.loading && !batches.data ? <Spinner /> : !batches.data?.length ? <EmptyState title="No batches for this month yet" /> : (
-          <div className="overflow-x-auto"><table className="w-full">
-            <thead><tr><Th>Batch</Th><Th>Imported</Th><Th className="text-right">Emails</Th><Th className="text-right">New</Th><Th className="text-right">Exact duplicates</Th><Th className="text-right">Needs review</Th><Th>Status</Th><Th> </Th></tr></thead>
-            <tbody>{batches.data.map((b) => (
-              <tr key={b.id}>
-                <Td>Batch {String(b.number).padStart(3, "0")}</Td><Td>{fmtDate(b.createdAt)}</Td>
-                <Td className="text-right">{b.totalParsed}</Td><Td className="text-right">{b.newEmails}</Td><Td className="text-right">{b.exactDuplicates}</Td><Td className="text-right">{b.needsReview}</Td>
-                <Td><Badge className={b.status === "COMPLETED" ? "bg-emerald-50 text-emerald-700" : "bg-red-100 text-red-800"}>{b.status === "COMPLETED" ? "Completed" : "Analysis failed — re-analyze"}</Badge></Td>
-                <Td><Button variant="ghost" size="sm" onClick={() => del(b)} aria-label="Delete batch"><Trash2 className="h-4 w-4" /></Button></Td>
-              </tr>))}
-            </tbody></table></div>
+          <BatchesTable batches={batches.data} onDelete={del} showInMonth />
         )}
       </Card>
     </div>

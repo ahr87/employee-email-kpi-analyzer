@@ -1,6 +1,9 @@
 import { IndexedDbAdapter } from "../storage/indexeddb";
 import { MemoryAdapter, type StorageAdapter, type WriteOp } from "../storage/storage";
-import { TABLES, type TableMap, type TableName } from "../storage/types";
+import { PRELOADED, TABLES, type RawRec, type TableMap, type TableName } from "../storage/types";
+
+type MemTable = Exclude<TableName, "raw">;
+const isMem = (t: TableName): t is MemTable => t !== "raw";
 
 /** In-memory view of one persisted table. Reads are synchronous; writes go through `Db.apply`. */
 export class Table<T extends { id: string }> {
@@ -30,13 +33,26 @@ export class Db {
 
   constructor(readonly adapter: StorageAdapter) {}
 
-  table<K extends TableName>(name: K): Table<TableMap[K]> {
+  table<K extends MemTable>(name: K): Table<TableMap[K]> {
     return this[name] as unknown as Table<TableMap[K]>;
+  }
+
+  /** Original Outlook message of an email (read from storage on demand; not kept in memory). */
+  getRaw(emailId: string): Promise<RawRec | undefined> {
+    return this.adapter.get("raw", emailId);
+  }
+
+  private async loadTables() {
+    for (const t of PRELOADED) {
+      if (!isMem(t)) continue;
+      const rows = (await this.adapter.readAll(t)) as { id: string }[];
+      this.table(t).reset((t === "batches" || t === "emails" ? rows.map((r) => upgrade(t, r)) : rows) as never);
+    }
   }
 
   async load() {
     await this.adapter.init();
-    for (const t of TABLES) this.table(t).reset(await this.adapter.readAll(t));
+    await this.loadTables();
   }
 
   /** Applies the change to memory and storage atomically. Writes are serialised. */
@@ -44,6 +60,7 @@ export class Db {
     const run = async () => {
       await this.adapter.write(ops); // storage first: if it fails (e.g. quota) memory stays unchanged
       for (const op of ops) {
+        if (!isMem(op.table)) continue; // raw messages live in storage only
         const t = this.table(op.table);
         for (const r of (op.put ?? []) as { id: string }[]) t.set(r as never);
         for (const id of op.delete ?? []) t.del(id);
@@ -60,7 +77,7 @@ export class Db {
 
   /** Re-reads everything from storage (another tab changed it). Serialised with local writes. */
   refresh(): Promise<void> {
-    const p = this.queue.then(async () => { for (const t of TABLES) this.table(t).reset(await this.adapter.readAll(t)); });
+    const p = this.queue.then(() => this.loadTables());
     this.queue = p.catch(() => undefined);
     return p;
   }
@@ -68,7 +85,7 @@ export class Db {
   async clearAll(tables: TableName[] = TABLES) {
     const run = async () => {
       await this.adapter.clear(tables);
-      for (const t of tables) this.table(t).reset([]);
+      for (const t of tables) if (isMem(t)) this.table(t).reset([]);
     };
     return this.enqueue(run);
   }
@@ -79,10 +96,23 @@ export class Db {
       const names = (Object.keys(rows) as TableName[]);
       await this.adapter.clear(names);
       await this.adapter.write(names.map((table) => ({ table, put: rows[table] as never })));
-      for (const t of names) this.table(t).reset((rows[t] ?? []) as never);
+      for (const t of names) if (isMem(t)) this.table(t).reset((rows[t] ?? []) as never);
     };
     return this.enqueue(run);
   }
+}
+
+/** Fills fields added after a record was written (data stored by an older version of the app stays valid). */
+function upgrade(table: "batches" | "emails", r: { id: string }) {
+  const o = r as Record<string, unknown>;
+  const def = (k: string, v: unknown) => { if (o[k] === undefined) o[k] = v; };
+  if (table === "batches") {
+    def("source", "Paste"); def("filename", null); def("exportedAt", null); def("dateFrom", null); def("dateTo", null);
+    def("uniqueSenders", 0); def("uniqueConversations", 0);
+  } else {
+    def("externalMessageId", null); def("externalConversationId", null); def("extKey", ""); def("normalization", "{}");
+  }
+  return r;
 }
 
 // ---- singleton ----------------------------------------------------------------------------------------------

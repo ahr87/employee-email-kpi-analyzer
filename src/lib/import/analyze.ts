@@ -7,6 +7,7 @@ import { compilePhrases } from "../classification/phrases";
 import { RuleBasedDuplicateDetector, type DuplicateDetector } from "../duplicate-detection/detector";
 import { isNmcAddress, matchEmployee } from "../employees/matching";
 import type { ReviewReason } from "../types";
+import { yieldToUi } from "./types";
 
 export interface AnalyzeOptions {
   /** Only (re)analyse these emails (still uses the whole month as context). */
@@ -16,12 +17,17 @@ export interface AnalyzeOptions {
   classifier?: EmailClassifier;
   detector?: DuplicateDetector;
   audit?: boolean;
+  /** Called while classifying (done = emails processed so far in this month). */
+  onProgress?: (done: number, total: number) => void;
 }
 
 const csv = (s: string) => (s ? s.split(",").filter(Boolean) : []);
 const FOLLOW_UP_WINDOW_MS = 30 * 86_400_000; // a reply prefix only links to an earlier message within 30 days
 const EVIDENCE_WINDOW_MS = 14 * 86_400_000; // NMC / department messages count as evidence for 14 days after the email
 const senderKey = (e: { senderEmail: string; senderName: string }) => (e.senderEmail || e.senderName).toLowerCase();
+/** Outlook's ConversationID is the strongest grouping key; pasted emails (and messages without one) group by normalised subject. */
+const groupKeyOf = (e: { id: string; conversationKey: string; externalConversationId: string | null }) =>
+  e.externalConversationId ? `x:${e.externalConversationId}` : e.conversationKey ? `s:${e.conversationKey}` : `__solo:${e.id}`;
 const ym = (d: Date) => d.getUTCFullYear() * 12 + d.getUTCMonth();
 
 type Row = EmailRec;
@@ -49,9 +55,9 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
 
   const employees = db.employees.all();
   const monthRows: Row[] = db.emails.all().filter((e) => e.year === year && e.month === month && e.monthDecision !== "EXCLUDED");
-  const keys = new Set(monthRows.map((e) => e.conversationKey).filter(Boolean));
+  const keys = new Set(monthRows.map(groupKeyOf));
   // related conversation messages that live in other months (evidence only)
-  const extra: Row[] = db.emails.all().filter((e) => !(e.year === year && e.month === month) && e.monthDecision !== "EXCLUDED" && keys.has(e.conversationKey));
+  const extra: Row[] = db.emails.all().filter((e) => !(e.year === year && e.month === month) && e.monthDecision !== "EXCLUDED" && keys.has(groupKeyOf(e)));
   const all: Row[] = [...monthRows, ...extra];
   const empById = new Map(employees.map((e) => [e.id, e]));
   const target = new Set(opts.emailIds ?? monthRows.map((e) => e.id));
@@ -64,7 +70,7 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
     role.set(e.id, r);
     if (r === "NMC") employeeOf.set(e.id, null);
     else if (e.employeeManual) employeeOf.set(e.id, e.employeeId);
-    else employeeOf.set(e.id, matchEmployee({ email: e.senderEmail, name: e.senderName }, employees).employee?.id ?? null);
+    else employeeOf.set(e.id, matchEmployee({ email: e.senderEmail, name: e.senderName }, employees, { allowNameFallback: !e.externalMessageId }).employee?.id ?? null);
   }
 
   // 2. conversation structure: group by normalised subject. The employee's original email is the REPORT (counted).
@@ -74,10 +80,10 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
   //    legitimately send the same generic subject on different days.
   const byKey = new Map<string, Row[]>();
   for (const e of all) {
-    const k = e.conversationKey || `__solo:${e.id}`;
+    const k = groupKeyOf(e);
     (byKey.get(k) ?? byKey.set(k, []).get(k)!).push(e);
   }
-  const kind = new Map<string, "REPORT" | "FOLLOW_UP" | "NMC">();
+  const kind = new Map<string, "REPORT" | "FOLLOW_UP" | "NMC" | "EXTERNAL">();
   const order = (a: Row, b: Row) => (a.sentAt && b.sentAt ? a.sentAt.getTime() - b.sentAt.getTime() : a.sentAt ? -1 : b.sentAt ? 1 : 0) || a.id.localeCompare(b.id);
   const T = (e: Row) => (e.sentAt ? e.sentAt.getTime() : null);
   for (const group of byKey.values()) {
@@ -86,6 +92,9 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
     for (const e of group) {
       if (role.get(e.id) === "NMC") { kind.set(e.id, "NMC"); anchors.push(T(e)); continue; }
       if (e.quoted && !employeeOf.get(e.id)) { kind.set(e.id, "FOLLOW_UP"); continue; }
+      // Outlook export: a sender that is not a configured employee (customers, alert systems, vendors …) is evidence only,
+      // never counted as employee activity. Assigning it to an employee (Email page) turns it into a counted report.
+      if (e.externalMessageId && !employeeOf.get(e.id)) { kind.set(e.id, "EXTERNAL"); continue; }
       const t = T(e);
       const answersEarlier = anchors.some((a) => a == null || t == null || (t - a >= 0 && t - a <= FOLLOW_UP_WINDOW_MS));
       kind.set(e.id, (e.isReply || e.isForward) && answersEarlier ? "FOLLOW_UP" : "REPORT");
@@ -136,7 +145,7 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
   };
   const threadMsg = (m: Row, shared = false): ThreadMessage => {
     const k = kind.get(m.id);
-    const r: ThreadMessage["role"] = role.get(m.id) === "NMC" ? "NMC" : k === "FOLLOW_UP" && !employeeOf.get(m.id) ? "OTHER" : "EMPLOYEE";
+    const r: ThreadMessage["role"] = role.get(m.id) === "NMC" ? "NMC" : (k === "FOLLOW_UP" || k === "EXTERNAL") && !employeeOf.get(m.id) ? "OTHER" : "EMPLOYEE";
     return {
       id: m.id, role: r, senderEmail: m.senderEmail, senderName: m.senderName, to: m.toRecipients, cc: m.ccRecipients,
       subject: m.subject, body: m.body, sentAt: m.sentAt?.getTime() ?? null, isForward: m.isForward, isReply: m.isReply, incidentIds: csv(m.incidentIds), shared,
@@ -146,9 +155,11 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
   // 4. classify + persist
   const updates: EmailRec[] = [];
   const stats = { analyzed: 0, skippedManual: 0, followUps: 0 };
+  let sinceYield = 0;
   for (const e of monthRows) {
     if (!target.has(e.id)) continue;
     stats.analyzed++;
+    if (++sinceYield >= 250) { sinceYield = 0; opts.onProgress?.(stats.analyzed, target.size); await yieldToUi(); }
     const k = kind.get(e.id)!;
     const r = role.get(e.id)!;
     const employeeId = employeeOf.get(e.id) ?? null;
@@ -158,7 +169,9 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
       if (k === "FOLLOW_UP") stats.followUps++;
       Object.assign(data, {
         autoClass: "OTHER", finalClass: "OTHER", confidence: 100, reviewStatus: "OK", reviewReasons: "[]", isManual: false,
-        reason: k === "NMC" ? "NMC message — used as evidence for the employee emails of this conversation; not counted." : "Follow-up message in an existing conversation — used as evidence; not counted as a separate email.",
+        reason: k === "NMC" ? "NMC message — used as evidence for the employee emails of this conversation; not counted."
+          : k === "EXTERNAL" ? "Sender is not a configured employee — kept as evidence, not counted. If this is an employee (another address), assign it to the employee."
+          : "Follow-up message in an existing conversation — used as evidence; not counted as a separate email.",
         duplicateOfId: null, duplicateSimilarity: null, duplicateReason: null, possibleDuplicateOfId: null, possibleDuplicateSim: null,
       });
       if (e.isManual && k === "FOLLOW_UP") delete (data as Record<string, unknown>).isManual;
@@ -183,7 +196,7 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
     } else {
       const thread = (evidenceFor.get(e.id) ?? []).map((x) => threadMsg(x.m, x.shared));
       const res = await classifier.classify({
-        email: { senderEmail: e.senderEmail, body: e.body, subject: e.subject, sentAt: e.sentAt?.getTime() ?? null, incidentIds: csv(e.incidentIds), role: r },
+        email: { senderEmail: e.senderEmail, senderName: e.senderName, body: e.body, subject: e.subject, sentAt: e.sentAt?.getTime() ?? null, incidentIds: csv(e.incidentIds), role: r },
         thread,
         duplicate: dup ? { ...dup, originalLabel: label(dup.originalId) } : null,
         possibleDuplicate: poss ? { ...poss, originalLabel: label(poss.originalId) } : null,
@@ -202,7 +215,8 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
     }
     maybeUpdate(e, data, updates);
   }
-  if (updates.length) await db.apply([{ table: "emails", put: updates }]);
+  for (let i = 0; i < updates.length; i += 500) await db.apply([{ table: "emails", put: updates.slice(i, i + 500) }]);
+  opts.onProgress?.(stats.analyzed, target.size);
 
   if (opts.audit) {
     await logAudit("REANALYZED", "Email", "", `Re-analysed ${stats.analyzed} emails for ${year}-${String(month).padStart(2, "0")}${opts.resetManual ? " (manual decisions reset)" : ""}`, {

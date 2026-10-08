@@ -6,7 +6,7 @@
  */
 const ENTITIES: Record<string, string> = {
   amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ndash: "-", mdash: "-",
-  lsquo: "'", rsquo: "'", ldquo: '"', rdquo: '"', hellip: "...", copy: "(c)",
+  lsquo: "'", rsquo: "'", ldquo: '"', rdquo: '"', hellip: "...", copy: "(c)", reg: "(R)", trade: "(TM)", bull: "*", middot: "·", laquo: "«", raquo: "»", euro: "EUR", shy: "",
 };
 
 export function looksLikeHtml(text: string): boolean {
@@ -24,17 +24,40 @@ export function decodeEntities(s: string): string {
   });
 }
 
+const SAFE_URL = /^(https?:\/\/|mailto:)/i;
+
+/**
+ * Safe HTML → plain text for analysis. Nothing here is ever rendered as HTML: scripts, styles, comments, <head>, images
+ * and all attributes are dropped, entities are decoded, <br>/paragraphs become line breaks, table cells are separated by
+ * tabs (one table row per line) and links keep their address as text ("label (https://…)") unless the scheme is unsafe.
+ */
 export function htmlToText(html: string): string {
   let t = html
     // protect "Name <user@host>" addresses from the tag stripper
     .replace(/<([^<>\s@]+@[^<>\s]+)>/g, "&lt;$1&gt;")
     .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<(script|style|head|iframe|object|embed)\b[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<(script|style|head|iframe|object|embed|svg|noscript|template)\b[\s\S]*?<\/\1\s*>/gi, "")
     .replace(/<(script|style|iframe|object|embed)\b[^>]*>/gi, "")
+    // links: keep a safe target visible as text, drop javascript:/data:/cid: and any other scheme
+    .replace(/<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a\s*>/gi, (_m, a1: string, a2: string, a3: string, inner: string) => {
+      const href = decodeEntities((a1 ?? a2 ?? a3 ?? "").trim());
+      const label = inner.replace(/<[^>]*>/g, "").trim();
+      if (!SAFE_URL.test(href)) return inner;
+      const bare = href.replace(/^mailto:/i, "");
+      return !label || label.replace(/\s/g, "") === href || label === bare ? ` ${label || href} ` : `${inner} (${bare})`;
+    })
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|tr|li|h[1-6]|table|blockquote)\s*>/gi, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6]|table|blockquote|ul|ol|pre)\s*>/gi, "\n")
     .replace(/<\/t[dh]\s*>/gi, "\t")
     .replace(/<[^>]*>/g, "");
-  t = decodeEntities(t);
-  return t.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  t = decodeEntities(t).replace(/[\u200b\u200c\u2060\ufeff]/g, "").replace(/\u00a0/g, " ");
+  return t
+    .split("\n")
+    .map((l) => l.replace(/[ ]{2,}/g, " ").replace(/\t[ \t]*/g, "\t").replace(/^[ \t]+|[ \t]+$/g, ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
+
+/** True when the HTML contains a data table (useful to know that table cells were flattened to tab-separated rows). */
+export const hasHtmlTable = (html: string) => /<table\b/i.test(html) && /<t[dh]\b/i.test(html);
