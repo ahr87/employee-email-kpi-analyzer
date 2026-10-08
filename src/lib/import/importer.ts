@@ -1,5 +1,7 @@
-import { createHash } from "node:crypto";
-import { prisma } from "../database/client";
+import { getDb, newId } from "../db";
+import { sha256 as sha } from "../utils/hash";
+import type { BatchRec, EmailRec } from "../storage/types";
+import { StorageFullError } from "../storage/storage";
 import { getSettings, saveSettings } from "../settings";
 import { logAudit } from "../audit";
 import { parseEmails, type ParsedEmail } from "../parser";
@@ -31,8 +33,6 @@ export interface ImportSummary {
   needsReview: number;
   warnings: string[];
 }
-
-const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 const letters = (s: string) => normalizeForAnalysis(s).replace(/[^\p{L}\p{N}]/gu, "");
 
@@ -87,26 +87,18 @@ export async function importBatch(input: { year: number; month: number; text: st
   const ambiguous = parsed.filter((e) => e.sentAtAlt).length;
   if (ambiguous) warnings.push(`${ambiguous} date(s) have an ambiguous day/month order (no date in this paste proves it) and were read as “${order === "DMY" ? "day/month" : "month/day"}”. Those that could fall in another month are flagged in Review.`);
 
-  const employees = await prisma.employee.findMany();
+  const db = await getDb();
+  const employees = db.employees.all();
   const prepared = parsed.map((p) => { const f = fingerprint(p); return { p, hash: f.strict, loose: f.loose }; });
 
-  const hashes = [...new Set(prepared.map((x) => x.hash))];
-  const mids = prepared.map((x) => x.p.messageId).filter((x): x is string => !!x);
+  // what is already stored (identity keys): strict hash, loose hash (+ was it a quoted copy) and Message-IDs
   const seenHash = new Set<string>();
   const seenMid = new Set<string>();
   const looseSeen = new Map<string, boolean>(); // looseHash -> was the stored/earlier copy a quoted one
-  for (let i = 0; i < hashes.length; i += 500) {
-    const rows = await prisma.email.findMany({ where: { contentHash: { in: hashes.slice(i, i + 500) } }, select: { contentHash: true } });
-    rows.forEach((r) => seenHash.add(r.contentHash));
-  }
-  const looses = [...new Set(prepared.map((x) => x.loose).filter(Boolean))];
-  for (let i = 0; i < looses.length; i += 500) {
-    const rows = await prisma.email.findMany({ where: { looseHash: { in: looses.slice(i, i + 500) } }, select: { looseHash: true, quoted: true } });
-    rows.forEach((r) => looseSeen.set(r.looseHash, (looseSeen.get(r.looseHash) ?? false) || r.quoted));
-  }
-  for (let i = 0; i < mids.length; i += 500) {
-    const rows = await prisma.email.findMany({ where: { messageId: { in: mids.slice(i, i + 500) } }, select: { messageId: true } });
-    rows.forEach((r) => r.messageId && seenMid.add(r.messageId));
+  for (const e of db.emails.all()) {
+    seenHash.add(e.contentHash);
+    if (e.messageId) seenMid.add(e.messageId);
+    if (e.looseHash) looseSeen.set(e.looseHash, (looseSeen.get(e.looseHash) ?? false) || e.quoted);
   }
 
   const fresh: { p: ParsedEmail; hash: string; loose: string }[] = [];
@@ -128,14 +120,16 @@ export async function importBatch(input: { year: number; month: number; text: st
   }
 
   let outside = 0;
-  const rows = fresh.map(({ p, hash, loose }) => {
+  const now = new Date();
+  const batchId = newId();
+  const rows: EmailRec[] = fresh.map(({ p, hash, loose }) => {
     const role = isNmcAddress(p.senderEmail, settings.nmcAddresses) ? "NMC" : "EMPLOYEE";
     const m = matchEmployee({ email: p.senderEmail, name: p.senderName }, employees);
     const ent = extractEntities(p.subject, p.body);
     const out = !!p.sentAt && (p.sentAt.getUTCFullYear() !== year || p.sentAt.getUTCMonth() + 1 !== month);
     if (out) outside++;
     return {
-      year, month, role,
+      id: newId(), batchId, year, month, role,
       senderName: p.senderName, senderEmail: p.senderEmail,
       toRecipients: p.to.join("; "), ccRecipients: p.cc.join("; "),
       subject: p.subject, sentAt: p.sentAt, sentAtAlt: p.sentAtAlt, body: p.body, rawSource: p.rawSource,
@@ -143,8 +137,12 @@ export async function importBatch(input: { year: number; month: number; text: st
       isForward: p.isForward, isReply: p.isReply, quoted: p.quoted, uncertainFields: JSON.stringify(p.uncertainFields),
       incidentIds: ent.incidents.join(","), serviceIds: ent.services.join(","), circuitIds: ent.circuits.join(","),
       ipAddresses: ent.ips.join(","), devices: ent.devices.join(","), locations: ent.locations.join(","),
+      kind: "REPORT", counted: true,
       outsideMonth: out, monthDecision: out ? "REVIEW" : "IN_MONTH",
-      employeeId: role === "EMPLOYEE" ? (m.employee?.id ?? null) : null,
+      employeeId: role === "EMPLOYEE" ? (m.employee?.id ?? null) : null, employeeManual: false,
+      autoClass: "PENDING_REVIEW", confidence: 0, reason: "", finalClass: "PENDING_REVIEW", isManual: false, overrideReason: null, overrideAt: null,
+      duplicateOfId: null, duplicateSimilarity: null, duplicateReason: null, possibleDuplicateOfId: null, possibleDuplicateSim: null,
+      reviewStatus: "NEEDS_REVIEW", reviewReasons: "[]", createdAt: now, updatedAt: now,
     };
   });
 
@@ -160,30 +158,28 @@ export async function importBatch(input: { year: number; month: number; text: st
     }
   }
 
-  const batch = await prisma.$transaction(async (tx) => {
-    const max = await tx.batch.aggregate({ _max: { number: true } });
-    const b = await tx.batch.create({
-      data: {
-        number: (max._max.number ?? 0) + 1, year, month, totalParsed: parsed.length, newEmails: rows.length,
-        exactDuplicates: parsed.length - rows.length, warnings: JSON.stringify(warnings),
-      },
-    });
-    const CH = 250;
-    for (let i = 0; i < rows.length; i += CH) {
-      await tx.email.createMany({ data: rows.slice(i, i + CH).map((r) => ({ ...r, batchId: b.id })) });
-    }
-    return b;
-  }, { timeout: 300_000, maxWait: 30_000 });
+  const batch: BatchRec = {
+    id: batchId, number: Math.max(0, ...db.batches.all().map((b) => b.number)) + 1, year, month, createdAt: now,
+    totalParsed: parsed.length, newEmails: rows.length, exactDuplicates: parsed.length - rows.length,
+    matched: 0, unmatched: 0, autoClassified: 0, needsReview: 0, warnings: JSON.stringify(warnings), status: "COMPLETED",
+  };
+  // batch + emails are stored in ONE transaction: all or nothing
+  try {
+    await db.apply([{ table: "batches", put: [batch] }, { table: "emails", put: rows }]);
+  } catch (e) {
+    if (e instanceof StorageFullError) throw new ImportError(e.message);
+    throw e;
+  }
 
   // incremental analysis: the whole month is re-evaluated so new emails can be originals / duplicates / evidence of others
   try {
     await analyzeMonth(year, month);
   } catch (e) {
-    await prisma.batch.update({ where: { id: batch.id }, data: { status: "ANALYSIS_FAILED" } });
+    await db.apply([{ table: "batches", put: [{ ...batch, status: "ANALYSIS_FAILED" }] }]);
     throw new ImportError(`The emails of batch ${batch.number} were stored, but their analysis failed (${(e as Error).message.split("\n").filter(Boolean).pop()}). Open Settings → “Re-analyze month” to retry; do not paste them again.`);
   }
 
-  const mine = await prisma.email.findMany({ where: { batchId: batch.id }, select: { kind: true, role: true, employeeId: true, reviewStatus: true } });
+  const mine = db.emails.all().filter((e) => e.batchId === batch.id);
   const counted = mine.filter((e) => e.kind === "REPORT");
   const matched = counted.filter((e) => e.employeeId).length;
   const unmatched = counted.length - matched;
@@ -196,7 +192,7 @@ export async function importBatch(input: { year: number; month: number; text: st
   if (!hasNmc) warnings.push("No NMC addresses are configured (Settings → Classification). Without them NMC replies/forwards cannot be recognised, so most emails will stay in Pending Review.");
   else if (counted.length && nmcMessages === 0) warnings.push("No messages from your NMC addresses were found in this paste, so there is no reply/forward evidence for these emails. Include the NMC replies/forwards when copying from Outlook.");
 
-  await prisma.batch.update({ where: { id: batch.id }, data: { matched, unmatched, needsReview, autoClassified, warnings: JSON.stringify(warnings) } });
+  await db.apply([{ table: "batches", put: [{ ...batch, matched, unmatched, needsReview, autoClassified, warnings: JSON.stringify(warnings) }] }]);
   await logAudit("BATCH_IMPORTED", "Batch", batch.id, `Batch ${batch.number}: ${rows.length} new messages, ${parsed.length - rows.length} exact duplicates ignored (${year}-${String(month).padStart(2, "0")})`, {
     parsed: parsed.length, new: rows.length, duplicates: parsed.length - rows.length,
   });
@@ -209,9 +205,15 @@ export async function importBatch(input: { year: number; month: number; text: st
 }
 
 export async function deleteBatch(id: string) {
-  const b = await prisma.batch.findUniqueOrThrow({ where: { id } });
-  const n = await prisma.email.count({ where: { batchId: id } });
-  await prisma.batch.delete({ where: { id } }); // emails cascade
-  await logAudit("BATCH_DELETED", "Batch", id, `Batch ${b.number} deleted (${n} emails)`, { year: b.year, month: b.month });
+  const db = await getDb();
+  const b = db.batches.get(id);
+  if (!b) throw new ImportError("Batch not found.");
+  const gone = new Set(db.emails.all().filter((e) => e.batchId === id).map((e) => e.id));
+  // other emails that pointed to a deleted one lose that link (the analysis below re-evaluates them)
+  const relinked = db.emails.all()
+    .filter((e) => !gone.has(e.id) && ((e.duplicateOfId && gone.has(e.duplicateOfId)) || (e.possibleDuplicateOfId && gone.has(e.possibleDuplicateOfId))))
+    .map((e) => ({ ...e, duplicateOfId: e.duplicateOfId && gone.has(e.duplicateOfId) ? null : e.duplicateOfId, possibleDuplicateOfId: e.possibleDuplicateOfId && gone.has(e.possibleDuplicateOfId) ? null : e.possibleDuplicateOfId }));
+  await db.apply([{ table: "batches", delete: [id] }, { table: "emails", delete: [...gone], put: relinked }]);
+  await logAudit("BATCH_DELETED", "Batch", id, `Batch ${b.number} deleted (${gone.size} emails)`, { year: b.year, month: b.month });
   await analyzeMonth(b.year, b.month);
 }

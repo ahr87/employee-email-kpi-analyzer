@@ -2,7 +2,10 @@
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { Download, Pencil, Plus, Trash2, Upload } from "lucide-react";
-import { api, useApi } from "@/lib/client";
+import { errorMessage, useQuery } from "@/lib/client";
+import { createEmployee, deleteEmployee, listEmployees, updateEmployee } from "@/lib/employees/service";
+import { exportEmployeesCsv, exportEmployeesXlsx, importEmployees } from "@/lib/employees/import-export";
+import { CSV_MIME, XLSX_MIME, downloadFile } from "@/lib/utils/download";
 import { Badge, Button, Card, EmptyState, ErrorState, Field, Input, Modal, Spinner, Td, Th, useToast } from "@/components/ui";
 
 interface Emp { id: string; employeeId: string; name: string; email: string; department: string; team: string; active: boolean }
@@ -11,7 +14,7 @@ const blank = { employeeId: "", name: "", email: "", department: "", team: "", a
 export default function EmployeesPage() {
   const toast = useToast();
   const [q, setQ] = useState("");
-  const { data, error, loading, reload } = useApi<{ employees: Emp[] }>(`/api/employees${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+  const { data, error, loading, reload } = useQuery(`employees:${q}`, () => listEmployees(q));
   const [edit, setEdit] = useState<(Partial<Emp> & typeof blank) | null>(null);
   const [saving, setSaving] = useState(false);
   const file = useRef<HTMLInputElement>(null);
@@ -21,25 +24,32 @@ export default function EmployeesPage() {
     setSaving(true);
     try {
       const { id, ...body } = edit as Emp;
-      if (id) await api(`/api/employees/${id}`, { method: "PATCH", json: body }); else await api("/api/employees", { method: "POST", json: body });
+      if (id) await updateEmployee(id, body); else await createEmployee(body);
       toast("ok", "Employee saved."); setEdit(null); reload();
-    } catch (e) { toast("error", (e as Error).message); } finally { setSaving(false); }
+    } catch (e) { toast("error", errorMessage(e)); } finally { setSaving(false); }
   }
   async function toggle(e: Emp) {
-    try { await api(`/api/employees/${e.id}`, { method: "PATCH", json: { active: !e.active } }); reload(); } catch (x) { toast("error", (x as Error).message); }
+    try { await updateEmployee(e.id, { active: !e.active }); reload(); } catch (x) { toast("error", errorMessage(x)); }
   }
   async function del(e: Emp) {
     if (!confirm(`Delete ${e.name}? Their emails are kept but become "unmatched".`)) return;
-    try { await api(`/api/employees/${e.id}`, { method: "DELETE" }); toast("ok", "Employee deleted."); reload(); } catch (x) { toast("error", (x as Error).message); }
+    try { await deleteEmployee(e.id); toast("ok", "Employee deleted."); reload(); } catch (x) { toast("error", errorMessage(x)); }
   }
   async function upload(f: File) {
-    const fd = new FormData(); fd.append("file", f);
     try {
-      const r = await api<{ created: number; updated: number; errors: string[] }>("/api/employees/import", { method: "POST", body: fd });
+      if (!/\.(csv|xlsx)$/i.test(f.name)) throw new Error("Only .csv and .xlsx files are supported.");
+      if (f.size > 10 * 1024 * 1024) throw new Error("The file is too large (limit 10 MB).");
+      const r = await importEmployees(f.name, await f.arrayBuffer());
       toast(r.errors.length ? "error" : "ok", `Imported: ${r.created} created, ${r.updated} updated${r.errors.length ? `, ${r.errors.length} error(s): ${r.errors.slice(0, 2).join(" | ")}` : ""}`);
       reload();
-    } catch (x) { toast("error", (x as Error).message); }
+    } catch (x) { toast("error", errorMessage(x)); }
     if (file.current) file.current.value = "";
+  }
+  async function exportAs(kind: "xlsx" | "csv") {
+    try {
+      if (kind === "xlsx") downloadFile("employees.xlsx", await exportEmployeesXlsx(), XLSX_MIME);
+      else downloadFile("employees.csv", await exportEmployeesCsv(), CSV_MIME);
+    } catch (x) { toast("error", errorMessage(x)); }
   }
 
   return (
@@ -49,21 +59,21 @@ export default function EmployeesPage() {
         <div className="flex flex-wrap gap-2">
           <input ref={file} type="file" accept=".csv,.xlsx" hidden onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
           <Button variant="secondary" onClick={() => file.current?.click()}><Upload className="h-4 w-4" />Import CSV / Excel</Button>
-          <a href="/api/employees/export?format=xlsx"><Button variant="secondary"><Download className="h-4 w-4" />Excel</Button></a>
-          <a href="/api/employees/export?format=csv"><Button variant="secondary"><Download className="h-4 w-4" />CSV</Button></a>
+          <Button variant="secondary" onClick={() => exportAs("xlsx")}><Download className="h-4 w-4" />Excel</Button>
+          <Button variant="secondary" onClick={() => exportAs("csv")}><Download className="h-4 w-4" />CSV</Button>
           <Button onClick={() => setEdit({ ...blank })}><Plus className="h-4 w-4" />Add employee</Button>
         </div>
       </div>
       <Input placeholder="Search by name, email, ID, department, team…" value={q} onChange={(e) => setQ(e.target.value)} className="max-w-md" />
       <Card>
-        {loading && !data ? <Spinner /> : error ? <ErrorState message={error} onRetry={reload} /> : !data?.employees.length ? (
+        {loading && !data ? <Spinner /> : error ? <ErrorState message={error} onRetry={reload} /> : !data?.length ? (
           <EmptyState title="No employees yet" hint="Add employees manually or import a CSV/Excel file with the columns: Employee ID, Employee Name, Email Address, Department, Team, Active. A sample file is in sample-data/employees.csv." />
         ) : (
           <div className="overflow-x-auto"><table className="w-full">
             <thead><tr><Th>ID</Th><Th>Name</Th><Th>Email</Th><Th>Department</Th><Th>Team</Th><Th>Status</Th><Th> </Th></tr></thead>
-            <tbody>{data.employees.map((e) => (
+            <tbody>{data.map((e) => (
               <tr key={e.id} className="hover:bg-slate-50">
-                <Td>{e.employeeId}</Td><Td><Link href={`/employees/${e.id}`} className="font-medium text-blue-700 hover:underline">{e.name}</Link></Td><Td>{e.email}</Td><Td>{e.department}</Td><Td>{e.team}</Td>
+                <Td>{e.employeeId}</Td><Td><Link href={`/employee?id=${e.id}`} className="font-medium text-blue-700 hover:underline">{e.name}</Link></Td><Td>{e.email}</Td><Td>{e.department}</Td><Td>{e.team}</Td>
                 <Td><button onClick={() => toggle(e)} title="Click to toggle"><Badge className={e.active ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-600"}>{e.active ? "Active" : "Inactive"}</Badge></button></Td>
                 <Td className="whitespace-nowrap"><Button variant="ghost" size="sm" aria-label="Edit" onClick={() => setEdit({ ...e })}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="sm" aria-label="Delete" onClick={() => del(e)}><Trash2 className="h-4 w-4" /></Button></Td>
               </tr>))}</tbody></table></div>

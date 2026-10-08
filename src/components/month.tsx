@@ -1,6 +1,8 @@
 "use client";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { MONTH_NAMES } from "@/lib/types";
+import { getSettings } from "@/lib/settings";
+import { monthsWithData } from "@/lib/reports/aggregate";
 import { Select } from "./ui";
 
 interface Ctx { year: number; month: number; set: (y: number, m: number) => void; ready: boolean }
@@ -15,17 +17,18 @@ export function MonthProvider({ children }: { children: ReactNode }) {
     (async () => {
       let next = { year: now.getFullYear(), month: now.getMonth() + 1 };
       try {
-        const saved = JSON.parse(localStorage.getItem(KEY) ?? "null");
-        if (saved?.year && saved?.month) next = saved;
+        let saved: { year?: number; month?: number } | null = null;
+        try { saved = JSON.parse(localStorage.getItem(KEY) ?? "null"); } catch { /* storage unavailable */ }
+        if (saved?.year && saved?.month) next = { year: saved.year, month: saved.month };
         else {
-          const s = await fetch("/api/settings").then((r) => r.json());
-          if (s?.defaultMonth) next = s.defaultMonth;
+          const s = await getSettings();
+          if (s.defaultMonth) next = s.defaultMonth;
           else {
-            const m = await fetch("/api/months").then((r) => r.json());
-            if (m?.months?.[0]) next = { year: m.months[0].year, month: m.months[0].month };
+            const m = await monthsWithData();
+            if (m[0]) next = { year: m[0].year, month: m[0].month };
           }
         }
-      } catch { /* storage unavailable: fall back to current month */ }
+      } catch { /* local database not readable yet: fall back to the current month */ }
       setState({ ...next, ready: true });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

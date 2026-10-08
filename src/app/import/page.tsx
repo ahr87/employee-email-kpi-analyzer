@@ -2,15 +2,14 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
-import { api, fmtDate, useApi } from "@/lib/client";
+import { errorMessage, fmtDate, useQuery } from "@/lib/client";
+import { deleteBatch, importBatch, type ImportSummary } from "@/lib/import/importer";
+import { listBatches } from "@/lib/import/batches";
 import { MonthPicker, useMonth } from "@/components/month";
 import { Button, Card, CardHeader, EmptyState, Spinner, Td, Textarea, Th, useToast, Badge } from "@/components/ui";
 import { MONTH_NAMES } from "@/lib/types";
-import type { ImportSummary } from "@/lib/import/importer";
 
 const SUMMARY_KEY = "eka.lastImport";
-interface BatchRow { id: string; number: number; year: number; month: number; createdAt: string; totalParsed: number; newEmails: number; exactDuplicates: number; needsReview: number; status: string }
-
 export default function ImportPage() {
   const { year, month, set } = useMonth();
   const toast = useToast();
@@ -19,22 +18,22 @@ export default function ImportPage() {
   const [result, setResult] = useState<ImportSummary | null>(null);
   useEffect(() => { try { const v = sessionStorage.getItem(SUMMARY_KEY); if (v) setResult(JSON.parse(v)); } catch { /* ignore */ } }, []);
   const [error, setError] = useState<string | null>(null);
-  const batches = useApi<{ batches: BatchRow[] }>(`/api/batches?year=${year}&month=${month}`);
+  const batches = useQuery(`batches:${year}:${month}`, () => listBatches(year, month));
 
   async function analyze() {
     setBusy(true); setError(null); setResult(null);
     try {
-      const r = await api<ImportSummary>("/api/import", { method: "POST", json: { year, month, text } });
+      const r = await importBatch({ year, month, text });
       setResult(r); setText(""); batches.reload();
       try { sessionStorage.setItem(SUMMARY_KEY, JSON.stringify(r)); } catch { /* ignore */ }
       toast("ok", `Batch ${r.batchNumber}: ${r.newEmails} new email(s) analyzed.`);
-    } catch (e) { setError((e as Error).message); toast("error", (e as Error).message); }
+    } catch (e) { setError(errorMessage(e)); toast("error", errorMessage(e)); }
     finally { setBusy(false); }
   }
-  async function del(b: BatchRow) {
+  async function del(b: { id: string; number: number; newEmails: number }) {
     if (!confirm(`Delete batch ${b.number} and its ${b.newEmails} emails? Manual decisions on them are lost.`)) return;
-    try { await api(`/api/batches/${b.id}`, { method: "DELETE" }); toast("ok", "Batch deleted."); batches.reload(); }
-    catch (e) { toast("error", (e as Error).message); }
+    try { await deleteBatch(b.id); toast("ok", "Batch deleted."); batches.reload(); }
+    catch (e) { toast("error", errorMessage(e)); }
   }
 
   return (
@@ -91,10 +90,10 @@ export default function ImportPage() {
 
       <Card>
         <CardHeader title={`Batches — ${MONTH_NAMES[month - 1]} ${year}`} />
-        {batches.loading ? <Spinner /> : !batches.data?.batches.length ? <EmptyState title="No batches for this month yet" /> : (
+        {batches.loading && !batches.data ? <Spinner /> : !batches.data?.length ? <EmptyState title="No batches for this month yet" /> : (
           <div className="overflow-x-auto"><table className="w-full">
             <thead><tr><Th>Batch</Th><Th>Imported</Th><Th className="text-right">Emails</Th><Th className="text-right">New</Th><Th className="text-right">Exact duplicates</Th><Th className="text-right">Needs review</Th><Th>Status</Th><Th> </Th></tr></thead>
-            <tbody>{batches.data.batches.map((b) => (
+            <tbody>{batches.data.map((b) => (
               <tr key={b.id}>
                 <Td>Batch {String(b.number).padStart(3, "0")}</Td><Td>{fmtDate(b.createdAt)}</Td>
                 <Td className="text-right">{b.totalParsed}</Td><Td className="text-right">{b.newEmails}</Td><Td className="text-right">{b.exactDuplicates}</Td><Td className="text-right">{b.needsReview}</Td>

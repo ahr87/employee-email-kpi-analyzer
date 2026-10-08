@@ -1,7 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Pencil, Plus, Trash2 } from "lucide-react";
-import { api, fmtDate, useApi } from "@/lib/client";
+import { errorMessage, fmtDate, useQuery } from "@/lib/client";
+import { getSettings, saveSettings } from "@/lib/settings";
+import { listAudit } from "@/lib/audit";
+import { analyzeAllMonths, analyzeMonth } from "@/lib/import/analyze";
+import { deleteMonthDataset, resetData } from "@/lib/data-management";
+import { loadDemoData } from "@/lib/demo";
+import { LocalDataCard } from "@/components/local-data";
 import { Badge, Button, Card, CardHeader, ErrorState, Field, Input, Select, Spinner, Textarea, useToast } from "@/components/ui";
 import { useMonth } from "@/components/month";
 import { CLASSES, CLASS_LABELS, MONTH_NAMES } from "@/lib/types";
@@ -20,8 +26,8 @@ const isValidAddress = (a: string) => /^@?[^\s@]+\.[^\s@]+$/.test(a) || /^[^\s@]
 export default function SettingsPage() {
   const toast = useToast();
   const month = useMonth();
-  const { data, error, loading, reload } = useApi<AppSettings>("/api/settings");
-  const audit = useApi<{ logs: { id: string; createdAt: string; action: string; summary: string }[] }>("/api/audit?limit=30");
+  const { data, error, loading, reload } = useQuery("settings", getSettings);
+  const audit = useQuery("audit", () => listAudit({ limit: 30 }));
   const [s, setS] = useState<AppSettings | null>(null);
   const [teams, setTeams] = useState("");
   const [phrases, setPhrases] = useState<Record<keyof PhraseLists, string>>({ escalation: "", notUseful: "", duplicate: "", useful: "" });
@@ -29,6 +35,7 @@ export default function SettingsPage() {
   const [reanalyze, setReanalyze] = useState(true);
   const [edit, setEdit] = useState<{ index: number; entry: NmcEntry } | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [version, setVersion] = useState(0); // bumps whenever stored data changes, so the Local data card refreshes
 
   useEffect(() => {
     if (!data) return;
@@ -54,13 +61,15 @@ export default function SettingsPage() {
         phrases: Object.fromEntries(PHRASE_META.map((m) => [m.key, lines(phrases[m.key])])),
         reanalyze,
       };
-      const r = await api<AppSettings & { reanalyzedMonths: number }>("/api/settings", { method: "PUT", json: body });
-      toast("ok", r.reanalyzedMonths ? `Settings saved; ${r.reanalyzedMonths} month(s) re-analyzed (manual decisions kept).` : "Settings saved.");
-      reload(); audit.reload();
-    } catch (e) { toast("error", (e as Error).message); } finally { setSaving(false); }
+      const { reanalyze: again, ...patch } = body;
+      await saveSettings(patch);
+      const months = again ? await analyzeAllMonths() : 0;
+      toast("ok", months ? `Settings saved; ${months} month(s) re-analyzed (manual decisions kept).` : "Settings saved.");
+      reload(); audit.reload(); setVersion((v) => v + 1);
+    } catch (e) { toast("error", errorMessage(e)); } finally { setSaving(false); }
   }
   async function danger(label: string, fn: () => Promise<unknown>) {
-    try { await fn(); toast("ok", label); reload(); audit.reload(); } catch (e) { toast("error", (e as Error).message); }
+    try { await fn(); toast("ok", label); reload(); audit.reload(); setVersion((v) => v + 1); } catch (e) { toast("error", errorMessage(e)); }
   }
   const k = s.kpi;
   const setK = (patch: Partial<AppSettings["kpi"]>) => upd({ kpi: { ...k, ...patch } });
@@ -170,23 +179,25 @@ export default function SettingsPage() {
         </div>
       </div></Card>
 
-      <Card><CardHeader title="Re-analysis & data" /><div className="space-y-3 p-4 text-sm">
+      <LocalDataCard version={version} onChanged={() => { reload(); audit.reload(); setVersion((v) => v + 1); }} />
+
+      <Card><CardHeader title="Re-analysis & demo data" /><div className="space-y-3 p-4 text-sm">
         <p className="text-slate-500">Selected month: <strong>{MONTH_NAMES[month.month - 1]} {month.year}</strong>. Manual decisions are always protected unless you choose the full reset.</p>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={() => danger("Month re-analyzed (manual decisions kept).", () => api("/api/emails/reanalyze", { method: "POST", json: { year: month.year, month: month.month } }))}>Re-analyze month</Button>
-          <Button variant="secondary" onClick={() => confirm("Re-analyze and DISCARD all manual decisions for this month?") && danger("Month re-analyzed; manual decisions discarded.", () => api("/api/emails/reanalyze", { method: "POST", json: { year: month.year, month: month.month, resetManual: true } }))}>Re-analyze + reset manual decisions</Button>
-          <Button variant="secondary" onClick={() => danger("Synthetic demo data loaded (September 2026).", () => api("/api/admin/demo", { method: "POST" }))}>Load synthetic demo data</Button>
+          <Button variant="secondary" onClick={() => danger("Month re-analyzed (manual decisions kept).", () => analyzeMonth(month.year, month.month, { audit: true }))}>Re-analyze month</Button>
+          <Button variant="secondary" onClick={() => confirm("Re-analyze and DISCARD all manual decisions for this month?") && danger("Month re-analyzed; manual decisions discarded.", () => analyzeMonth(month.year, month.month, { audit: true, resetManual: true }))}>Re-analyze + reset manual decisions</Button>
+          <Button variant="secondary" onClick={() => danger("Synthetic demo data loaded (September 2026).", async () => { await loadDemoData(); month.set(2026, 9); })}>Load synthetic demo data</Button>
         </div>
         <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-3">
-          <Button variant="danger" onClick={() => { if (confirm(`Delete ALL emails and batches of ${MONTH_NAMES[month.month - 1]} ${month.year}? This cannot be undone.`)) danger("Month dataset deleted.", () => api("/api/admin/month", { method: "DELETE", json: { year: month.year, month: month.month, confirm: "DELETE" } })); }}>Delete this month&apos;s dataset</Button>
-          <Button variant="danger" onClick={() => { const t = prompt("This permanently deletes ALL emails, batches and the audit log (employees and settings are kept).\nType RESET to confirm."); if (t === "RESET") danger("All email data deleted.", () => api("/api/admin/reset", { method: "POST", json: { confirm: "RESET" } })); }}>Reset all email data</Button>
-          <Button variant="danger" onClick={() => { const t = prompt("This permanently deletes EVERYTHING: emails, employees, settings and audit log.\nType RESET to confirm."); if (t === "RESET") danger("Everything deleted.", () => api("/api/admin/reset", { method: "POST", json: { confirm: "RESET", employees: true, settings: true } })); }}>Reset everything</Button>
+          <Button variant="danger" onClick={() => { if (confirm(`Delete ALL emails and batches of ${MONTH_NAMES[month.month - 1]} ${month.year}? This cannot be undone.`)) danger("Month dataset deleted.", () => deleteMonthDataset(month.year, month.month)); }}>Delete this month&apos;s dataset</Button>
+          <Button variant="danger" onClick={() => { const t = prompt("This permanently deletes ALL emails, batches and the audit log (employees and settings are kept).\nType RESET to confirm."); if (t === "RESET") danger("All email data deleted.", () => resetData()); }}>Delete all emails (keep employees &amp; settings)</Button>
+          
         </div>
         <p className="text-xs text-slate-400">Employee import/export lives on the Employees page (CSV and Excel).</p>
       </div></Card>
 
       <Card><CardHeader title="Audit log (latest 30)" />
-        <ul className="divide-y divide-slate-100">{audit.data?.logs.map((l) => <li key={l.id} className="px-4 py-2 text-sm"><span className="text-xs text-slate-400">{fmtDate(l.createdAt)}</span> · <span className="text-xs font-medium text-slate-500">{l.action}</span> · {l.summary}</li>)}{!audit.data?.logs.length && <li className="p-4 text-sm text-slate-400">No entries yet.</li>}</ul>
+        <ul className="divide-y divide-slate-100">{audit.data?.map((l) => <li key={l.id} className="px-4 py-2 text-sm"><span className="text-xs text-slate-400">{fmtDate(l.createdAt)}</span> · <span className="text-xs font-medium text-slate-500">{l.action}</span> · {l.summary}</li>)}{!audit.data?.length && <li className="p-4 text-sm text-slate-400">No entries yet.</li>}</ul>
       </Card>
     </div>
   );

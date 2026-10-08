@@ -137,3 +137,30 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     </ToastCtx.Provider>
   );
 }
+
+/** Confirmation dialog; `requireText` makes the user type a word before a destructive action is enabled. */
+export function ConfirmModal({ open, onClose, title, children, confirmLabel, onConfirm, requireText, danger = true, busy }: {
+  open: boolean; onClose: () => void; title: string; children: ReactNode; confirmLabel: string; onConfirm: () => void | Promise<void>;
+  requireText?: string; danger?: boolean; busy?: boolean;
+}) {
+  const [typed, setTyped] = useState("");
+  useEffect(() => { if (!open) setTyped(""); }, [open]);
+  const ok = !requireText || typed.trim() === requireText;
+  return (
+    <Modal open={open} onClose={onClose} title={title}>
+      <div className="space-y-3 text-sm">
+        {children}
+        {requireText && (
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-slate-600">Type <code className="rounded bg-slate-100 px-1">{requireText}</code> to confirm</span>
+            <input autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} aria-label={`Type ${requireText} to confirm`} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-600" />
+          </label>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button variant={danger ? "danger" : "primary"} disabled={!ok || busy} onClick={() => onConfirm()}>{busy ? "Working…" : confirmLabel}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}

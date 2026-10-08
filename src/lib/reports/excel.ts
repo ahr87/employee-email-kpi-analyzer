@@ -1,5 +1,6 @@
-import ExcelJS from "exceljs";
-import { prisma } from "../database/client";
+import type ExcelJS from "exceljs";
+import { getDb } from "../db";
+import { loadExcelJS } from "./exceljs";
 import { monthlyStats, type EmployeeStat } from "./aggregate";
 import { CLASS_LABELS, CLASSES, MONTH_NAMES, REVIEW_REASON_LABELS, type Classification, type ReviewReason } from "../types";
 import { toCsv } from "./csv";
@@ -23,24 +24,28 @@ const fillRating = (cell: ExcelJS.Cell, rating: string) => {
 };
 
 export async function emailDetailRows(year: number, month: number, onlyReview = false) {
-  const emails = await prisma.email.findMany({
-    where: { year, month, counted: true, monthDecision: { not: "EXCLUDED" }, ...(onlyReview ? { reviewStatus: "NEEDS_REVIEW" } : {}) },
-    include: { employee: true, batch: { select: { number: true } }, duplicateOf: { include: { employee: true } } },
-    orderBy: { sentAt: "asc" },
+  const db = await getDb();
+  const emails = db.emails.all()
+    .filter((e) => e.year === year && e.month === month && e.counted && e.monthDecision !== "EXCLUDED" && (!onlyReview || e.reviewStatus === "NEEDS_REVIEW"))
+    .sort((a, b) => (a.sentAt?.getTime() ?? Infinity) - (b.sentAt?.getTime() ?? Infinity));
+  return emails.map((e) => {
+    const emp = db.employees.get(e.employeeId);
+    const orig = db.emails.get(e.duplicateOfId);
+    const origEmp = db.employees.get(orig?.employeeId);
+    return {
+      date: e.sentAt ? e.sentAt.toISOString().replace("T", " ").slice(0, 16) : "",
+      employee: emp?.name ?? "(unmatched)", employeeEmail: emp?.email ?? e.senderEmail,
+      department: emp?.department ?? "", team: emp?.team ?? "", subject: e.subject,
+      classification: CLASS_LABELS[e.finalClass as Classification] ?? e.finalClass,
+      suggested: CLASS_LABELS[e.autoClass as Classification] ?? e.autoClass, confidence: e.isManual ? "manual" : e.confidence,
+      manual: e.isManual ? "Yes" : "No", overrideReason: e.overrideReason ?? "", reason: e.reason,
+      duplicateOf: orig ? `${origEmp?.name ?? orig.senderName} — ${orig.subject}` : "",
+      similarity: e.duplicateSimilarity ?? "",
+      reviewStatus: e.reviewStatus === "NEEDS_REVIEW" ? "Needs review" : e.reviewStatus === "REVIEWED" ? "Reviewed" : "OK",
+      reviewReasons: (JSON.parse(e.reviewReasons || "[]") as ReviewReason[]).map((r) => REVIEW_REASON_LABELS[r] ?? r).join("; "),
+      batch: db.batches.get(e.batchId)?.number ?? 0, monthDecision: e.monthDecision === "INCLUDED" ? "Included manually" : e.monthDecision === "IN_MONTH" ? "In month" : e.monthDecision,
+    };
   });
-  return emails.map((e) => ({
-    date: e.sentAt ? e.sentAt.toISOString().replace("T", " ").slice(0, 16) : "",
-    employee: e.employee?.name ?? "(unmatched)", employeeEmail: e.employee?.email ?? e.senderEmail,
-    department: e.employee?.department ?? "", team: e.employee?.team ?? "", subject: e.subject,
-    classification: CLASS_LABELS[e.finalClass as Classification] ?? e.finalClass,
-    suggested: CLASS_LABELS[e.autoClass as Classification] ?? e.autoClass, confidence: e.isManual ? "manual" : e.confidence,
-    manual: e.isManual ? "Yes" : "No", overrideReason: e.overrideReason ?? "", reason: e.reason,
-    duplicateOf: e.duplicateOf ? `${e.duplicateOf.employee?.name ?? e.duplicateOf.senderName} — ${e.duplicateOf.subject}` : "",
-    similarity: e.duplicateSimilarity ?? "",
-    reviewStatus: e.reviewStatus === "NEEDS_REVIEW" ? "Needs review" : e.reviewStatus === "REVIEWED" ? "Reviewed" : "OK",
-    reviewReasons: (JSON.parse(e.reviewReasons || "[]") as ReviewReason[]).map((r) => REVIEW_REASON_LABELS[r] ?? r).join("; "),
-    batch: e.batch.number, monthDecision: e.monthDecision === "INCLUDED" ? "Included manually" : e.monthDecision === "IN_MONTH" ? "In month" : e.monthDecision,
-  }));
 }
 
 const pct = (n: number, d: number) => (d ? Math.round((n / d) * 1000) / 1000 : 0);
@@ -58,8 +63,9 @@ export async function monthlyCsv(year: number, month: number): Promise<string> {
   return toCsv([[...SUMMARY_HEAD, "Status"], ...emps.map((e) => [...rowOf(e), e.kpi.status.replace(/_/g, " ")])]);
 }
 
-export async function monthlyXlsx(year: number, month: number): Promise<Buffer> {
+export async function monthlyXlsx(year: number, month: number): Promise<Uint8Array> {
   const { stats, emps } = await summaryRows(year, month);
+  const ExcelJS = await loadExcelJS();
   const wb = new ExcelJS.Workbook();
   wb.creator = "Employee Email KPI Analyzer";
   const title = `${MONTH_NAMES[month - 1]} ${year}`;
@@ -143,8 +149,8 @@ export async function monthlyXlsx(year: number, month: number): Promise<Buffer> 
   // 6. Employees
   const e = wb.addWorksheet("Employees");
   e.addRow(["Employee ID", "Name", "Email", "Department", "Team", "Active"]);
-  for (const x of await prisma.employee.findMany({ orderBy: { name: "asc" } })) e.addRow([x.employeeId, x.name, x.email, x.department, x.team, x.active ? "Yes" : "No"]);
+  for (const x of (await getDb()).employees.all().sort((a, b) => a.name.localeCompare(b.name))) e.addRow([x.employeeId, x.name, x.email, x.department, x.team, x.active ? "Yes" : "No"]);
   header(e, 1, [14, 28, 32, 18, 18, 8]);
 
-  return Buffer.from(await wb.xlsx.writeBuffer());
+  return new Uint8Array(await wb.xlsx.writeBuffer());
 }

@@ -44,7 +44,7 @@ export function EmployeeTable({ stats }: { stats: MonthlyStats }) {
           <tbody>
             {rows.map((e) => (
               <tr key={e.employeeId} className="hover:bg-slate-50">
-                <Td><Link href={`/employees/${e.employeeId}`} className="font-medium text-blue-700 hover:underline">{e.name}</Link><div className="text-xs text-slate-400">{e.department}{e.team ? ` · ${e.team}` : ""}</div></Td>
+                <Td><Link href={`/employee?id=${e.employeeId}`} className="font-medium text-blue-700 hover:underline">{e.name}</Link><div className="text-xs text-slate-400">{e.department}{e.team ? ` · ${e.team}` : ""}</div></Td>
                 <Td className="text-right tabular-nums">{e.kpi.total}</Td>
                 <Td className="text-right tabular-nums">{e.counts.FORWARDED}</Td>
                 <Td className="text-right tabular-nums">{e.counts.NOT_USEFUL}</Td>

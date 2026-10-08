@@ -1,9 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { api, fmtDate } from "@/lib/client";
+import { errorMessage, fmtDate } from "@/lib/client";
+import { applyEmailAction, listEmails } from "@/lib/import/emails";
 import { CLASS_LABELS, REVIEW_REASON_LABELS, type Classification, type ReviewReason } from "@/lib/types";
-import type { listEmails } from "@/lib/import/emails";
 import { Badge, Button, ClassBadge, Input, Modal, Select, useToast } from "./ui";
 
 export const parseReasons = (json: string): ReviewReason[] => { try { return JSON.parse(json); } catch { return []; } };
@@ -25,8 +25,8 @@ function DuplicatePicker({ email, onPick, onClose }: { email: ActionEmail; onPic
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     const t = setTimeout(() => {
-      api<Candidates>(`/api/emails?year=${email.year}&month=${email.month}&pageSize=12&sort=sentAt&dir=asc${q ? `&q=${encodeURIComponent(q)}` : ""}`)
-        .then((d) => { setData(d); setErr(null); }).catch((e: Error) => setErr(e.message));
+      listEmails({ year: email.year, month: email.month, pageSize: 12, sort: "sentAt", dir: "asc", ...(q ? { q } : {}) })
+        .then((d) => { setData(d); setErr(null); }).catch((e: unknown) => setErr(errorMessage(e)));
     }, 200);
     return () => clearTimeout(t);
   }, [q, email.year, email.month]);
@@ -67,8 +67,8 @@ export function EmailActions({ email, employees, onDone, compact }: { email: Act
 
   async function run(body: unknown, msg: string) {
     setBusy(true);
-    try { await api(`/api/emails/${email.id}`, { method: "PATCH", json: body }); toast("ok", msg); onDone(); }
-    catch (e) { toast("error", (e as Error).message); }
+    try { await applyEmailAction(email.id, body); toast("ok", msg); onDone(); }
+    catch (e) { toast("error", errorMessage(e)); }
     finally { setBusy(false); setPicking(false); }
   }
   const setClass = (cls: Classification, duplicateOfId?: string) =>

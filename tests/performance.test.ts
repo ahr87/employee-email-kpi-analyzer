@@ -1,18 +1,17 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { prisma } from "@/lib/database/client";
+import { freshDb, seedEmployees } from "./db";
 import { importBatch } from "@/lib/import/importer";
 import { monthlyStats } from "@/lib/reports/aggregate";
 import { monthlyXlsx } from "@/lib/reports/excel";
 import { saveSettings } from "@/lib/settings";
-import { resetData } from "@/lib/demo";
 import { listEmails } from "@/lib/import/emails";
 import { msg, NMC } from "./helpers";
 
 const N = 2500;
 
 beforeAll(async () => {
-  await resetData({ employees: true, settings: true });
-  await prisma.employee.createMany({ data: Array.from({ length: 40 }, (_, i) => ({ employeeId: `P${i}`, name: `Perf User ${i}`, email: `perf${i}@acme.test` })) });
+  await freshDb();
+  await seedEmployees(Array.from({ length: 40 }, (_, i) => ({ employeeId: `P${i}`, name: `Perf User ${i}`, email: `perf${i}@acme.test` })));
   await saveSettings({ nmcAddresses: [{ address: "nmc@acme.test", label: "", enabled: true }] });
 }, 60_000);
 

@@ -1,4 +1,3 @@
-import { prisma } from "../database/client";
 import { importEmployees } from "../employees/import-export";
 import { importBatch } from "../import/importer";
 import { saveSettings } from "../settings";
@@ -17,12 +16,4 @@ export async function loadDemoData() {
   return { employees: emp, batch: batches[batches.length - 1], batches };
 }
 
-/** Deletes ALL local data (emails, batches, audit log). Optionally also employees and settings. */
-export async function resetData(opts: { employees?: boolean; settings?: boolean } = {}) {
-  await prisma.email.deleteMany();
-  await prisma.batch.deleteMany();
-  await prisma.auditLog.deleteMany();
-  if (opts.employees) await prisma.employee.deleteMany();
-  if (opts.settings) await prisma.setting.deleteMany();
-  await logAudit("DATA_RESET", "System", "", `Local data reset (emails${opts.employees ? ", employees" : ""}${opts.settings ? ", settings" : ""})`, opts);
-}
+export { resetData } from "../data-management";

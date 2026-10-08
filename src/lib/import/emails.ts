@@ -1,112 +1,132 @@
 import { z } from "zod";
-import type { Prisma } from "../../generated/prisma/client";
-import { prisma } from "../database/client";
-import { logAudit } from "../audit";
-import { CLASSES } from "../types";
+import { getDb } from "../db";
+import { listAudit, logAudit } from "../audit";
+import { CLASSES, CLASS_LABELS, type Classification } from "../types";
 import { analyzeMonth } from "./analyze";
+import type { EmailRec, EmployeeRec } from "../storage/types";
 
 export const emailFilterSchema = z.object({
-  year: z.coerce.number().int().optional(),
-  month: z.coerce.number().int().optional(),
+  year: z.number().int().optional(),
+  month: z.number().int().optional(),
   q: z.string().optional(),
   employeeId: z.string().optional(),
   classification: z.enum(CLASSES).optional(),
-  minConfidence: z.coerce.number().optional(),
-  maxConfidence: z.coerce.number().optional(),
+  minConfidence: z.number().optional(),
+  maxConfidence: z.number().optional(),
   reviewStatus: z.enum(["OK", "NEEDS_REVIEW", "REVIEWED"]).optional(),
   department: z.string().optional(),
   team: z.string().optional(),
   batchId: z.string().optional(),
-  unmatched: z.coerce.boolean().optional(),
+  unmatched: z.boolean().optional(),
   /** counted = the emails that enter the KPI; followups / nmc = conversation evidence; all = everything */
   view: z.enum(["counted", "followups", "nmc", "all"]).default("counted"),
   sort: z.enum(["sentAt", "subject", "confidence", "finalClass", "employee"]).default("sentAt"),
   dir: z.enum(["asc", "desc"]).default("desc"),
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(200).default(25),
+  page: z.number().int().min(1).default(1),
+  pageSize: z.number().int().min(1).max(200).default(25),
 });
-export type EmailFilter = z.infer<typeof emailFilterSchema>;
+export type EmailFilter = z.input<typeof emailFilterSchema>;
 
-export function buildWhere(f: Partial<EmailFilter>): Prisma.EmailWhereInput {
-  const and: Prisma.EmailWhereInput[] = [];
-  if (f.year) and.push({ year: f.year });
-  if (f.month) and.push({ month: f.month });
-  if (f.employeeId) and.push({ employeeId: f.employeeId });
-  if (f.classification) and.push({ finalClass: f.classification });
-  if (f.minConfidence != null) and.push({ confidence: { gte: f.minConfidence } });
-  if (f.maxConfidence != null) and.push({ confidence: { lte: f.maxConfidence } });
-  if (f.reviewStatus) and.push({ reviewStatus: f.reviewStatus });
-  if (f.batchId) and.push({ batchId: f.batchId });
-  if (f.unmatched) and.push({ employeeId: null, counted: true });
-  const view = f.view ?? "counted";
-  if (view === "counted") and.push({ counted: true });
-  else if (view === "followups") and.push({ kind: "FOLLOW_UP" });
-  else if (view === "nmc") and.push({ kind: "NMC" });
-  if (f.department) and.push({ employee: { is: { department: f.department } } });
-  if (f.team) and.push({ employee: { is: { team: f.team } } });
-  if (f.q?.trim()) {
-    const q = f.q.trim();
-    const cls = CLASSES.filter((c) => c.toLowerCase().replace(/_/g, " ").includes(q.toLowerCase().replace(/_/g, " ")));
-    and.push({
-      OR: [
-        { subject: { contains: q } }, { senderEmail: { contains: q } }, { senderName: { contains: q } },
-        { incidentIds: { contains: q.toLowerCase() } }, { serviceIds: { contains: q.toLowerCase() } },
-        { circuitIds: { contains: q.toLowerCase() } }, { locations: { contains: q.toLowerCase() } },
-        { employee: { is: { OR: [{ name: { contains: q } }, { email: { contains: q } }] } } },
-        ...(cls.length ? [{ finalClass: { in: cls as string[] } }] : []),
-      ],
-    });
-  }
-  return { AND: and };
+export interface EmployeeRef { id: string; name: string; email: string; department: string; team: string }
+export interface EmailSummary extends EmailRec {
+  employee: EmployeeRef | null;
+  batch: { number: number } | null;
+  duplicateOf: { id: string; subject: string; sentAt: Date | null; senderName: string; employee: { name: string } | null } | null;
 }
 
-export const emailSummarySelect = {
-  id: true, year: true, month: true, subject: true, sentAt: true, senderName: true, senderEmail: true,
-  finalClass: true, autoClass: true, confidence: true, reason: true, reviewStatus: true, reviewReasons: true,
-  isManual: true, monthDecision: true, duplicateOfId: true, duplicateSimilarity: true, batchId: true, employeeId: true,
-  possibleDuplicateOfId: true, possibleDuplicateSim: true, duplicateReason: true, role: true, kind: true, counted: true, quoted: true, isForward: true, isReply: true,
-  employee: { select: { id: true, name: true, email: true, department: true, team: true } },
-  batch: { select: { number: true } },
-  duplicateOf: { select: { id: true, subject: true, sentAt: true, employee: { select: { name: true } }, senderName: true } },
-} satisfies Prisma.EmailSelect;
+const ref = (e: EmployeeRec | undefined): EmployeeRef | null => (e ? { id: e.id, name: e.name, email: e.email, department: e.department, team: e.team } : null);
 
-export async function listEmails(raw: unknown) {
+async function summarize(rows: EmailRec[]): Promise<EmailSummary[]> {
+  const db = await getDb();
+  return rows.map((e) => {
+    const orig = e.duplicateOfId ? db.emails.get(e.duplicateOfId) : undefined;
+    const origEmp = orig?.employeeId ? db.employees.get(orig.employeeId) : undefined;
+    return {
+      ...e,
+      employee: ref(db.employees.get(e.employeeId)),
+      batch: db.batches.get(e.batchId) ? { number: db.batches.get(e.batchId)!.number } : null,
+      duplicateOf: orig ? { id: orig.id, subject: orig.subject, sentAt: orig.sentAt, senderName: orig.senderName, employee: origEmp ? { name: origEmp.name } : null } : null,
+    };
+  });
+}
+
+/** Filtering is done in memory over the locally stored emails (case-insensitive, Arabic-safe). */
+export async function listEmails(raw: EmailFilter = {}) {
   const f = emailFilterSchema.parse(raw);
-  const where = buildWhere(f);
-  const dir = f.dir;
-  const orderBy: Prisma.EmailOrderByWithRelationInput[] =
-    f.sort === "employee" ? [{ employee: { name: dir } }, { sentAt: "desc" }] : [{ [f.sort]: dir } as Prisma.EmailOrderByWithRelationInput, { id: "asc" }];
-  const [total, rows] = await Promise.all([
-    prisma.email.count({ where }),
-    prisma.email.findMany({ where, orderBy, skip: (f.page - 1) * f.pageSize, take: f.pageSize, select: emailSummarySelect }),
-  ]);
-  return { total, page: f.page, pageSize: f.pageSize, rows };
+  const db = await getDb();
+  const q = f.q?.trim().toLowerCase();
+  const qClass = q ? CLASSES.filter((c) => c.toLowerCase().replace(/_/g, " ").includes(q.replace(/_/g, " ")) || CLASS_LABELS[c as Classification].toLowerCase().includes(q)) : [];
+  const empOf = (e: EmailRec) => db.employees.get(e.employeeId);
+
+  const rows = db.emails.all().filter((e) => {
+    if (f.year && e.year !== f.year) return false;
+    if (f.month && e.month !== f.month) return false;
+    if (f.employeeId && e.employeeId !== f.employeeId) return false;
+    if (f.classification && e.finalClass !== f.classification) return false;
+    if (f.minConfidence != null && e.confidence < f.minConfidence) return false;
+    if (f.maxConfidence != null && e.confidence > f.maxConfidence) return false;
+    if (f.reviewStatus && e.reviewStatus !== f.reviewStatus) return false;
+    if (f.batchId && e.batchId !== f.batchId) return false;
+    if (f.unmatched && !(e.employeeId === null && e.counted)) return false;
+    if (f.view === "counted" && !e.counted) return false;
+    if (f.view === "followups" && e.kind !== "FOLLOW_UP") return false;
+    if (f.view === "nmc" && e.kind !== "NMC") return false;
+    if (f.department || f.team) {
+      const emp = empOf(e);
+      if (f.department && emp?.department !== f.department) return false;
+      if (f.team && emp?.team !== f.team) return false;
+    }
+    if (q) {
+      const emp = empOf(e);
+      const hay = [e.subject, e.senderEmail, e.senderName, e.incidentIds, e.serviceIds, e.circuitIds, e.locations, emp?.name ?? "", emp?.email ?? ""].join("\n").toLowerCase();
+      if (!hay.includes(q) && !qClass.includes(e.finalClass as Classification)) return false;
+    }
+    return true;
+  });
+
+  const dir = f.dir === "asc" ? 1 : -1;
+  const time = (e: EmailRec) => (e.sentAt ? e.sentAt.getTime() : null);
+  rows.sort((a, b) => {
+    let c = 0;
+    if (f.sort === "sentAt") {
+      const x = time(a), y = time(b);
+      if (x == null || y == null) return x == null && y == null ? 0 : x == null ? 1 : -1; // undated last
+      c = x - y;
+    } else if (f.sort === "subject") c = a.subject.localeCompare(b.subject);
+    else if (f.sort === "confidence") c = a.confidence - b.confidence;
+    else if (f.sort === "finalClass") c = a.finalClass.localeCompare(b.finalClass);
+    else c = (empOf(a)?.name ?? "￿").localeCompare(empOf(b)?.name ?? "￿");
+    return c * dir || (time(b) ?? 0) - (time(a) ?? 0) || a.id.localeCompare(b.id);
+  });
+
+  const start = (f.page - 1) * f.pageSize;
+  return { total: rows.length, page: f.page, pageSize: f.pageSize, rows: await summarize(rows.slice(start, start + f.pageSize)) };
 }
 
 export async function getEmailDetail(id: string) {
-  const email = await prisma.email.findUnique({
-    where: { id },
-    include: {
-      employee: true, batch: { select: { number: true, createdAt: true } },
-      duplicateOf: { include: { employee: true } },
-      duplicates: { select: { id: true, subject: true, sentAt: true, duplicateSimilarity: true, employee: { select: { name: true } }, senderName: true } },
-    },
-  });
+  const db = await getDb();
+  const email = db.emails.get(id);
   if (!email) return null;
-  const possible = email.possibleDuplicateOfId
-    ? await prisma.email.findUnique({ where: { id: email.possibleDuplicateOfId }, include: { employee: true } })
-    : null;
+  const [full] = await summarize([email]);
+  const batch = db.batches.get(email.batchId);
+  const all = db.emails.all();
+  const duplicates = all.filter((e) => e.duplicateOfId === id).map((e) => ({
+    id: e.id, subject: e.subject, sentAt: e.sentAt, duplicateSimilarity: e.duplicateSimilarity, senderName: e.senderName, employee: e.employeeId && db.employees.get(e.employeeId) ? { name: db.employees.get(e.employeeId)!.name } : null,
+  }));
+  const possibleRec = email.possibleDuplicateOfId ? db.emails.get(email.possibleDuplicateOfId) : undefined;
+  const possible = possibleRec ? (await summarize([possibleRec]))[0] : null;
   const thread = email.conversationKey
-    ? await prisma.email.findMany({
-        where: { conversationKey: email.conversationKey, id: { not: id } },
-        orderBy: { sentAt: "asc" },
-        select: { id: true, subject: true, sentAt: true, senderName: true, senderEmail: true, role: true, kind: true, counted: true, quoted: true, isForward: true, isReply: true, body: true, finalClass: true },
-        take: 50,
-      })
+    ? all.filter((e) => e.conversationKey === email.conversationKey && e.id !== id)
+        .sort((a, b) => (a.sentAt?.getTime() ?? 0) - (b.sentAt?.getTime() ?? 0)).slice(0, 50)
+        .map((e) => ({ id: e.id, subject: e.subject, sentAt: e.sentAt, senderName: e.senderName, senderEmail: e.senderEmail, role: e.role, kind: e.kind, counted: e.counted, quoted: e.quoted, isForward: e.isForward, isReply: e.isReply, body: e.body, finalClass: e.finalClass }))
     : [];
-  const audit = await prisma.auditLog.findMany({ where: { entityType: "Email", entityId: id }, orderBy: { createdAt: "desc" } });
-  return { email, possible, thread, audit };
+  const audit = await listAudit({ entityType: "Email", entityId: id });
+  return {
+    email: { ...full, batch: { number: batch?.number ?? 0, createdAt: batch?.createdAt ?? email.createdAt }, duplicates },
+    possible, thread, audit,
+  };
 }
+export type EmailDetail = NonNullable<Awaited<ReturnType<typeof getEmailDetail>>>;
 
 export const emailAction = z.discriminatedUnion("action", [
   z.object({ action: z.literal("override"), classification: z.enum(CLASSES), reason: z.string().max(500).optional(), duplicateOfId: z.string().optional() }),
@@ -119,43 +139,41 @@ export const emailAction = z.discriminatedUnion("action", [
 /** Applies a manual decision. Manual decisions are audited and protected from re-analysis. */
 export async function applyEmailAction(id: string, raw: unknown) {
   const a = emailAction.parse(raw);
-  const e = await prisma.email.findUniqueOrThrow({ where: { id } });
+  const db = await getDb();
+  const e = db.emails.get(id);
+  if (!e) throw new Error("Email not found.");
   const key = `${e.year}-${String(e.month).padStart(2, "0")}`;
+  const save = (patch: Partial<EmailRec>) => db.apply([{ table: "emails", put: [{ ...db.emails.get(id)!, ...patch, updatedAt: new Date() }] }]);
 
   if (a.action === "override") {
     const changed = a.classification !== e.finalClass;
     if (a.duplicateOfId && a.duplicateOfId === id) throw new Error("An email cannot be a duplicate of itself.");
-    if (a.duplicateOfId) await prisma.email.findUniqueOrThrow({ where: { id: a.duplicateOfId }, select: { id: true } });
-    await prisma.email.update({
-      where: { id },
-      data: {
-        finalClass: a.classification, isManual: true, overrideReason: a.reason || null, overrideAt: new Date(),
-        reviewStatus: "REVIEWED",
-        ...(a.classification === "DUPLICATE" && a.duplicateOfId
-          ? { duplicateOfId: a.duplicateOfId, duplicateSimilarity: null, duplicateReason: "Original email selected manually." }
-          : {}),
-      },
+    if (a.duplicateOfId && !db.emails.get(a.duplicateOfId)) throw new Error("The selected original email does not exist.");
+    await save({
+      finalClass: a.classification, isManual: true, overrideReason: a.reason || null, overrideAt: new Date(), reviewStatus: "REVIEWED",
+      ...(a.classification === "DUPLICATE" && a.duplicateOfId
+        ? { duplicateOfId: a.duplicateOfId, duplicateSimilarity: null, duplicateReason: "Original email selected manually." }
+        : {}),
     });
     await logAudit(changed ? "CLASSIFICATION_CHANGED" : "CLASSIFICATION_APPROVED", "Email", id,
       changed ? `Classification changed ${e.finalClass} → ${a.classification}` : `Classification confirmed: ${a.classification}`,
       { original: e.autoClass, previousFinal: e.finalClass, final: a.classification, reason: a.reason ?? null, duplicateOfId: a.duplicateOfId ?? null });
   } else if (a.action === "approve") {
-    await prisma.email.update({
-      where: { id }, data: { isManual: true, overrideAt: new Date(), reviewStatus: "REVIEWED" },
-    });
+    await save({ isManual: true, overrideAt: new Date(), reviewStatus: "REVIEWED" });
     await logAudit("CLASSIFICATION_APPROVED", "Email", id, `Classification approved: ${e.finalClass}`, { final: e.finalClass, confidence: e.confidence });
   } else if (a.action === "clearOverride") {
-    await prisma.email.update({ where: { id }, data: { isManual: false, overrideReason: null, overrideAt: null } });
+    await save({ isManual: false, overrideReason: null, overrideAt: null });
     await logAudit("REANALYZED", "Email", id, "Manual decision removed; email re-analysed", {});
     await analyzeMonth(e.year, e.month, { emailIds: [id] });
   } else if (a.action === "assignEmployee") {
-    await prisma.email.update({ where: { id }, data: { employeeId: a.employeeId, employeeManual: a.employeeId != null } });
+    if (a.employeeId && !db.employees.get(a.employeeId)) throw new Error("The selected employee does not exist.");
+    await save({ employeeId: a.employeeId, employeeManual: a.employeeId != null });
     await logAudit("EMPLOYEE_ASSIGNED", "Email", id, a.employeeId ? "Email assigned to employee manually" : "Employee assignment removed", { employeeId: a.employeeId });
     await analyzeMonth(e.year, e.month, { emailIds: [id] });
   } else if (a.action === "monthDecision") {
-    await prisma.email.update({ where: { id }, data: { monthDecision: a.decision } });
+    await save({ monthDecision: a.decision });
     await logAudit("MONTH_DECISION", "Email", id, `Out-of-month email set to ${a.decision} for ${key}`, { decision: a.decision });
     await analyzeMonth(e.year, e.month);
   }
-  return prisma.email.findUniqueOrThrow({ where: { id }, select: emailSummarySelect });
+  return (await summarize([db.emails.get(id)!]))[0];
 }

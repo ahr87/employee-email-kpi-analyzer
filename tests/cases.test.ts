@@ -1,22 +1,21 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { prisma } from "@/lib/database/client";
+import { freshDb, q, seedEmployees } from "./db";
 import { importBatch } from "@/lib/import/importer";
 import { applyEmailAction } from "@/lib/import/emails";
 import { monthlyStats } from "@/lib/reports/aggregate";
 import { saveSettings } from "@/lib/settings";
-import { resetData } from "@/lib/demo";
 import { chain, msg, NMC, T } from "./helpers";
 
 const EMP = [
   ["E1", "Ahmed Ali", "ahmed@company.test"], ["E2", "Sara Hassan", "sara@company.test"], ["E3", "Omar Khalid", "omar@company.test"],
 ] as const;
 const who = (i: number) => ({ from: EMP[i][1], email: EMP[i][2] });
-const mine = async (subject: string) => prisma.email.findFirstOrThrow({ where: { subject, counted: true } });
+const mine = async (subject: string) => q.email((e) => e.subject === subject && e.counted);
 const imp = (text: string, month = 9) => importBatch({ year: 2026, month, text });
 
 beforeEach(async () => {
-  await resetData({ employees: true, settings: true });
-  await prisma.employee.createMany({ data: EMP.map(([employeeId, name, email]) => ({ employeeId, name, email })) });
+  await freshDb();
+  await seedEmployees(EMP.map(([employeeId, name, email]) => ({ employeeId, name, email })));
   await saveSettings({ nmcAddresses: [{ address: "nmc@acme.test", label: "NMC", enabled: true }, { address: "@monitoring.acme.test", label: "Monitoring", enabled: true }] });
 });
 
@@ -130,17 +129,17 @@ describe("Phase 2 cases (Outlook-style pasted text)", () => {
     ]));
     expect(third.newEmails).toBe(1);
     expect(third.quotedRepeats).toBe(1);
-    expect(await prisma.email.count({ where: { counted: true } })).toBe(1);
+    expect(await q.count((e) => e.counted)).toBe(1);
   });
 
   it("Case 8 — three batches accumulate and late NMC evidence upgrades earlier emails", async () => {
     await imp(msg({ ...who(0), at: T(2, 9, 0), subject: "Issue one", body: "a" }) + "\n" + msg({ ...who(1), at: T(2, 9, 30), subject: "Issue two", body: "b" }));
     await imp(msg({ ...who(2), at: T(3, 9, 0), subject: "Issue three", body: "c" }));
-    expect(await prisma.batch.count()).toBe(2);
+    expect((await q.batches()).length).toBe(2);
     expect((await mine("Issue one")).finalClass).toBe("PENDING_REVIEW");
     // third batch contains only the NMC forward for "Issue one"
     await imp(msg(NMC(T(2, 10, 0), "FW: Issue one", "Escalated to the field team.", { to: "Field <field@company.test>" })));
-    expect(await prisma.batch.count()).toBe(3);
+    expect((await q.batches()).length).toBe(3);
     expect((await mine("Issue one")).finalClass).toBe("FORWARDED");
     expect((await mine("Issue two")).finalClass).toBe("PENDING_REVIEW");
     expect((await monthlyStats(2026, 9)).totalEmails).toBe(3);
@@ -156,7 +155,7 @@ describe("conversation structure and review reasons", () => {
     ]));
     const s = await monthlyStats(2026, 9);
     expect(s.totalEmails).toBe(1);
-    expect(await prisma.email.count({ where: { kind: "FOLLOW_UP" } })).toBe(1);
+    expect(await q.count((e) => e.kind === "FOLLOW_UP")).toBe(1);
   });
 
   it("third-party (department) replies are evidence, never counted as unmatched employees", async () => {
@@ -221,7 +220,7 @@ describe("conversation structure and review reasons", () => {
     ].join("\n"));
     const a = await mine("Alpha issue"), b = await mine("Beta issue");
     await applyEmailAction(b.id, { action: "override", classification: "DUPLICATE", duplicateOfId: a.id, reason: "Same customer" });
-    const after = await prisma.email.findUniqueOrThrow({ where: { id: b.id } });
+    const after = await q.email((e) => e.id === b.id);
     expect(after).toMatchObject({ finalClass: "DUPLICATE", duplicateOfId: a.id, isManual: true, reviewStatus: "REVIEWED" });
     await applyEmailAction(a.id, { action: "override", classification: "FORWARDED" });
     const s = await monthlyStats(2026, 9);

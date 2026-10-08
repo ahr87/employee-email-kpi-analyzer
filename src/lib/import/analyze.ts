@@ -1,5 +1,5 @@
-import type { Prisma } from "../../generated/prisma/client";
-import { prisma } from "../database/client";
+import { getDb } from "../db";
+import type { EmailRec } from "../storage/types";
 import { getSettings } from "../settings";
 import { logAudit } from "../audit";
 import { RuleBasedClassifier, type EmailClassifier, type ThreadMessage } from "../classification/classifier";
@@ -24,15 +24,7 @@ const EVIDENCE_WINDOW_MS = 14 * 86_400_000; // NMC / department messages count a
 const senderKey = (e: { senderEmail: string; senderName: string }) => (e.senderEmail || e.senderName).toLowerCase();
 const ym = (d: Date) => d.getUTCFullYear() * 12 + d.getUTCMonth();
 
-const FIELDS = {
-  id: true, batchId: true, year: true, month: true, senderName: true, senderEmail: true, toRecipients: true, ccRecipients: true,
-  subject: true, sentAt: true, sentAtAlt: true, quoted: true, body: true, conversationKey: true, isForward: true, isReply: true, uncertainFields: true,
-  incidentIds: true, serviceIds: true, circuitIds: true, locations: true, ipAddresses: true, devices: true,
-  monthDecision: true, employeeId: true, employeeManual: true, isManual: true, role: true, kind: true, counted: true,
-  autoClass: true, finalClass: true, confidence: true, reason: true, reviewStatus: true, reviewReasons: true,
-  duplicateOfId: true, duplicateSimilarity: true, duplicateReason: true, possibleDuplicateOfId: true, possibleDuplicateSim: true,
-} satisfies Prisma.EmailSelect;
-type Row = Prisma.EmailGetPayload<{ select: typeof FIELDS }>;
+type Row = EmailRec;
 
 /**
  * (Re)analyses one month. Derives, from stored data only: NMC/employee role, employee match, conversation
@@ -46,24 +38,20 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
   const phrases = compilePhrases(settings.phrases);
   const nmcEmails = settings.nmcAddresses.filter((n) => n.enabled && n.address.includes("@") && !n.address.startsWith("@")).map((n) => n.address.toLowerCase());
 
+  const db = await getDb();
   if (opts.resetManual) {
-    const ids = opts.emailIds;
-    const reset = { isManual: false, overrideReason: null, overrideAt: null, employeeManual: false };
-    if (!ids) await prisma.email.updateMany({ where: { year, month }, data: reset });
-    else for (let i = 0; i < ids.length; i += 400) await prisma.email.updateMany({ where: { year, month, id: { in: ids.slice(i, i + 400) } }, data: reset });
+    const only = opts.emailIds ? new Set(opts.emailIds) : null;
+    const reset = db.emails.all()
+      .filter((e) => e.year === year && e.month === month && (!only || only.has(e.id)))
+      .map((e) => ({ ...e, isManual: false, overrideReason: null, overrideAt: null, employeeManual: false, updatedAt: new Date() }));
+    if (reset.length) await db.apply([{ table: "emails", put: reset }]);
   }
 
-  const [monthRows, employees] = await Promise.all([
-    prisma.email.findMany({ where: { year, month, monthDecision: { not: "EXCLUDED" } }, select: FIELDS }),
-    prisma.employee.findMany(),
-  ]);
-  const inMonth = new Set(monthRows.map((e) => e.id));
-  const keys = [...new Set(monthRows.map((e) => e.conversationKey).filter(Boolean))];
-  // SQLite limits the number of bound parameters, so look related conversations up in chunks
-  const extra: Row[] = [];
-  for (let i = 0; i < keys.length; i += 400) {
-    extra.push(...(await prisma.email.findMany({ where: { conversationKey: { in: keys.slice(i, i + 400) }, monthDecision: { not: "EXCLUDED" }, NOT: { year, month } }, select: FIELDS })));
-  }
+  const employees = db.employees.all();
+  const monthRows: Row[] = db.emails.all().filter((e) => e.year === year && e.month === month && e.monthDecision !== "EXCLUDED");
+  const keys = new Set(monthRows.map((e) => e.conversationKey).filter(Boolean));
+  // related conversation messages that live in other months (evidence only)
+  const extra: Row[] = db.emails.all().filter((e) => !(e.year === year && e.month === month) && e.monthDecision !== "EXCLUDED" && keys.has(e.conversationKey));
   const all: Row[] = [...monthRows, ...extra];
   const empById = new Map(employees.map((e) => [e.id, e]));
   const target = new Set(opts.emailIds ?? monthRows.map((e) => e.id));
@@ -156,7 +144,7 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
   };
 
   // 4. classify + persist
-  const updates: Prisma.PrismaPromise<unknown>[] = [];
+  const updates: EmailRec[] = [];
   const stats = { analyzed: 0, skippedManual: 0, followUps: 0 };
   for (const e of monthRows) {
     if (!target.has(e.id)) continue;
@@ -164,7 +152,7 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
     const k = kind.get(e.id)!;
     const r = role.get(e.id)!;
     const employeeId = employeeOf.get(e.id) ?? null;
-    const data: Prisma.EmailUncheckedUpdateInput = { employeeId, role: r, kind: k, counted: k === "REPORT" };
+    const data: Partial<EmailRec> = { employeeId, role: r, kind: k, counted: k === "REPORT" };
 
     if (k !== "REPORT") {
       if (k === "FOLLOW_UP") stats.followUps++;
@@ -174,7 +162,7 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
         duplicateOfId: null, duplicateSimilarity: null, duplicateReason: null, possibleDuplicateOfId: null, possibleDuplicateSim: null,
       });
       if (e.isManual && k === "FOLLOW_UP") delete (data as Record<string, unknown>).isManual;
-      updates.push(...maybeUpdate(e, data));
+      maybeUpdate(e, data, updates);
       continue;
     }
 
@@ -212,11 +200,9 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
         reviewReasons: JSON.stringify(all2), reviewStatus: all2.length ? "NEEDS_REVIEW" : "OK",
       });
     }
-    updates.push(...maybeUpdate(e, data));
+    maybeUpdate(e, data, updates);
   }
-  const CHUNK = 400;
-  for (let i = 0; i < updates.length; i += CHUNK) await prisma.$transaction(updates.slice(i, i + CHUNK));
-  void inMonth;
+  if (updates.length) await db.apply([{ table: "emails", put: updates }]);
 
   if (opts.audit) {
     await logAudit("REANALYZED", "Email", "", `Re-analysed ${stats.analyzed} emails for ${year}-${String(month).padStart(2, "0")}${opts.resetManual ? " (manual decisions reset)" : ""}`, {
@@ -226,16 +212,18 @@ export async function analyzeMonth(year: number, month: number, opts: AnalyzeOpt
   return stats;
 }
 
-/** Skips the write when nothing changed (keeps large re-analyses fast). */
-function maybeUpdate(row: Row, data: Prisma.EmailUncheckedUpdateInput): Prisma.PrismaPromise<unknown>[] {
+/** Collects an updated copy of the record, but only when something actually changed (keeps large re-analyses fast). */
+function maybeUpdate(row: Row, data: Partial<EmailRec>, out: EmailRec[]) {
   const cur = row as unknown as Record<string, unknown>;
   const changed = Object.entries(data).some(([k, v]) => cur[k] !== v && !(cur[k] == null && v == null));
-  return changed ? [prisma.email.update({ where: { id: row.id }, data })] : [];
+  if (changed) out.push({ ...row, ...data, updatedAt: new Date() });
 }
 
 /** Re-analyses every month that has data (used after settings such as NMC addresses or phrases change). */
 export async function analyzeAllMonths() {
-  const months = await prisma.email.groupBy({ by: ["year", "month"] });
-  for (const m of months) await analyzeMonth(m.year, m.month);
-  return months.length;
+  const db = await getDb();
+  const months = new Map<string, { year: number; month: number }>();
+  for (const e of db.emails.all()) months.set(`${e.year}-${e.month}`, { year: e.year, month: e.month });
+  for (const m of months.values()) await analyzeMonth(m.year, m.month);
+  return months.size;
 }

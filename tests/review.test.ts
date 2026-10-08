@@ -1,19 +1,18 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { prisma } from "@/lib/database/client";
+import { getDb } from "@/lib/db";
+import { freshDb, q, seedEmployees } from "./db";
 import { importBatch } from "@/lib/import/importer";
 import { monthlyStats } from "@/lib/reports/aggregate";
 import { saveSettings } from "@/lib/settings";
-import { resetData } from "@/lib/demo";
 import { chain, msg, NMC, T } from "./helpers";
 
 const EMP = [["E1", "Ahmed Ali", "ahmed@company.test"], ["E2", "Sara Hassan", "sara@company.test"], ["E3", "Omar Khalid", "omar@company.test"]] as const;
 const who = (i: number) => ({ from: EMP[i][1], email: EMP[i][2] });
 const imp = (text: string, month = 9) => importBatch({ year: 2026, month, text });
-const all = (subject: string) => prisma.email.findMany({ where: { subject }, orderBy: { sentAt: "asc" } });
 
 beforeEach(async () => {
-  await resetData({ employees: true, settings: true });
-  await prisma.employee.createMany({ data: EMP.map(([employeeId, name, email]) => ({ employeeId, name, email })) });
+  await freshDb();
+  await seedEmployees(EMP.map(([employeeId, name, email]) => ({ employeeId, name, email })));
   await saveSettings({ nmcAddresses: [{ address: "nmc@acme.test", label: "", enabled: true }] });
 });
 
@@ -48,45 +47,22 @@ describe("production-readiness probes: conversation handling", () => {
       msg({ ...who(1), at: T(14, 9, 30), subject: "Link down", body: "Link down at Site B." }),
       msg(NMC(T(14, 10, 0), "RE: Link down", "Escalated to field team.", { to: "Ahmed Ali <ahmed@company.test>; Field <field@company.test>" })),
     ].join("\n"));
-    const [a] = await all("Link down");
-    const emails = await prisma.email.findMany({ where: { subject: "Link down", counted: true }, include: { employee: true } });
+    const db = await getDb();
+    const emails = (await q.emails((e) => e.subject === "Link down" && e.counted)).map((e) => ({ ...e, employee: db.employees.get(e.employeeId) }));
     expect(emails.find((e) => e.employee?.name === "Ahmed Ali")!.finalClass).toBe("FORWARDED");
     expect(emails.find((e) => e.employee?.name === "Sara Hassan")!.finalClass).toBe("PENDING_REVIEW");
-    void a;
   });
 
   it("an NMC reply weeks later (another incident, same subject) is not evidence for an old email", async () => {
     await imp(msg({ ...who(0), at: T(2, 9, 0), subject: "Link down", body: "Link down at Site A." }));
     await imp(msg(NMC(T(28, 10, 0), "FW: Link down", "Escalated to field team.", { to: "Field <field@company.test>" })));
-    expect((await prisma.email.findFirstOrThrow({ where: { subject: "Link down", counted: true } })).finalClass).toBe("PENDING_REVIEW");
+    expect((await q.email((e) => e.subject === "Link down" && e.counted)).finalClass).toBe("PENDING_REVIEW");
   });
 
   it("two different emails from one sender in the same minute with the same subject are both kept", async () => {
     const m = (body: string) => msg({ ...who(2), at: T(14, 9, 0), subject: "Alarm", body });
     const r = await imp(m("Device SW-AAA-01 down\n") + "\n" + m("Device SW-BBB-02 down\n"));
     expect(r.newEmails).toBe(2);
-  });
-});
-
-describe("production-readiness probes: local API protection", () => {
-  it("rejects foreign Host headers (DNS rebinding) and cross-site state changes, allows the local UI", async () => {
-    const { POST } = await import("@/app/api/admin/reset/route");
-    const call = (headers: Record<string, string>) =>
-      POST(new Request("http://localhost:3000/api/admin/reset", { method: "POST", headers: { "content-type": "text/plain", ...headers }, body: JSON.stringify({ confirm: "RESET" }) }));
-    await prisma.email.count(); // DB reachable
-    expect((await call({ host: "evil.example.com" })).status).toBe(403);
-    expect((await call({ host: "localhost:3000", origin: "https://evil.example.com" })).status).toBe(403);
-    expect((await call({ host: "localhost:3000", "sec-fetch-site": "cross-site" })).status).toBe(403);
-    expect((await prisma.employee.count())).toBe(3); // nothing was reset
-    expect((await call({ host: "localhost:3000", origin: "http://localhost:3000" })).status).toBe(200);
-    expect((await call({ host: "[::1]:3000" })).status).toBe(200);
-  });
-
-  it("malformed JSON gives a clear 400, not a server error", async () => {
-    const { POST } = await import("@/app/api/import/route");
-    const res = await POST(new Request("http://localhost:3000/api/import", { method: "POST", headers: { host: "localhost:3000" }, body: "{not json" }));
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/valid JSON/);
   });
 });
 
@@ -98,7 +74,7 @@ describe("production-readiness probes: exact duplicates vs quoted copies", () =>
       { ...who(0), at: T(14, 10, 0), subject: "Fault Q", body: "Long description" }, // different body: truncated copy
     ]));
     expect(r.quotedRepeats).toBe(1);
-    expect(await prisma.email.count({ where: { counted: true } })).toBe(1);
+    expect(await q.count((e) => e.counted)).toBe(1);
   });
 });
 
@@ -106,9 +82,10 @@ describe("production-readiness probes: Excel / CSV safety", () => {
   it("formula-looking text stays text in Excel and is neutralised in CSV", async () => {
     await imp(msg({ ...who(0), at: T(14, 10, 0), subject: "=HYPERLINK(\"http://x\",\"click\")", body: "=1+1" }));
     const { monthlyXlsx, monthlyCsv } = await import("@/lib/reports/excel");
-    const ExcelJS = (await import("exceljs")).default;
+    const { loadExcelJS } = await import("@/lib/reports/exceljs");
+    const ExcelJS = await loadExcelJS();
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load((await monthlyXlsx(2026, 9)) as unknown as ArrayBuffer);
+    await wb.xlsx.load((await monthlyXlsx(2026, 9)).buffer as ArrayBuffer);
     const ws = wb.getWorksheet("Email Details")!;
     const cell = ws.getRow(2).getCell(6);
     expect(cell.type).toBe(ExcelJS.ValueType.String);
@@ -162,27 +139,27 @@ describe("production-readiness probes: database integrity and manual decisions",
     const { deleteBatch } = await import("@/lib/import/importer");
     const r1 = await imp(msg({ ...who(0), at: T(14, 10, 0), subject: "Mansour BB outage", body: "No BB in Mansour." }));
     const r2 = await imp(msg({ ...who(1), at: T(14, 10, 10), subject: "Mansour BB link down", body: "No BB in Mansour." }));
-    const dup = await prisma.email.findFirstOrThrow({ where: { subject: "Mansour BB link down" } });
+    const dup = await q.email((e) => e.subject === "Mansour BB link down");
     expect(dup.duplicateOfId).not.toBeNull();
     await deleteBatch(r1.batchId);
-    const after = await prisma.email.findFirstOrThrow({ where: { subject: "Mansour BB link down" } });
+    const after = await q.email((e) => e.subject === "Mansour BB link down");
     expect(after.duplicateOfId).toBeNull();
     expect(after.finalClass).not.toBe("DUPLICATE"); // the original is gone → re-analysis no longer calls it a duplicate
-    expect(await prisma.email.count({ where: { batchId: r1.batchId } })).toBe(0);
-    const sara = await prisma.employee.findFirstOrThrow({ where: { name: "Sara Hassan" } });
-    await prisma.employee.delete({ where: { id: sara.id } });
-    expect((await prisma.email.findFirstOrThrow({ where: { batchId: r2.batchId } })).employeeId).toBeNull();
+    expect(await q.count((e) => e.batchId === r1.batchId)).toBe(0);
+    const sara = (await getDb()).employees.all().find((e) => e.name === "Sara Hassan")!;
+    await (await import("@/lib/employees/service")).deleteEmployee(sara.id);
+    expect((await q.email((e) => e.batchId === r2.batchId)).employeeId).toBeNull();
   });
 
   it("manual decisions survive a settings change that re-analyzes every month", async () => {
     const { applyEmailAction } = await import("@/lib/import/emails");
     const { analyzeAllMonths } = await import("@/lib/import/analyze");
     await imp(msg({ ...who(0), at: T(14, 10, 0), subject: "Manual keeper", body: "x" }));
-    const e = await prisma.email.findFirstOrThrow({ where: { subject: "Manual keeper" } });
+    const e = await q.email((x) => x.subject === "Manual keeper");
     await applyEmailAction(e.id, { action: "override", classification: "NOT_USEFUL", reason: "phone call" });
     await saveSettings({ similarityThreshold: 70, confidenceThreshold: 60 });
     await analyzeAllMonths();
-    const after = await prisma.email.findUniqueOrThrow({ where: { id: e.id } });
+    const after = await q.email((x) => x.id === e.id);
     expect(after).toMatchObject({ finalClass: "NOT_USEFUL", isManual: true, overrideReason: "phone call", autoClass: "PENDING_REVIEW" });
     expect((await monthlyStats(2026, 9)).counts.NOT_USEFUL).toBe(1);
   });

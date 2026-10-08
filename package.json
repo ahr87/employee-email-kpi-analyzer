@@ -2,14 +2,11 @@
   "name": "employee-email-kpi-analyzer",
   "version": "1.0.0",
   "private": true,
-  "description": "Local tool that analyzes pasted Outlook emails and produces monthly employee email KPI reports. No Outlook connection.",
+  "description": "Employee Email KPI Analyzer \u2014 a static web app (GitHub Pages) that analyzes pasted Outlook emails entirely in the browser. No server, no Outlook connection.",
   "scripts": {
-    "dev": "next dev -H 127.0.0.1",
-    "build": "prisma generate && next build",
-    "start": "next start -H 127.0.0.1",
-    "postinstall": "prisma generate",
-    "db:push": "prisma db push",
-    "db:seed": "tsx scripts/seed-demo.ts",
+    "dev": "next dev",
+    "build": "next build && node scripts/postbuild.mjs",
+    "start": "node scripts/serve-static.mjs --dir out --base /employee-email-kpi-analyzer",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
@@ -17,11 +14,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@prisma/adapter-better-sqlite3": "^7.10.0",
-    "@prisma/client": "^7.10.0",
-    "better-sqlite3": "^13.0.3",
     "clsx": "^2.1.1",
-    "dotenv": "^18.0.5",
     "exceljs": "^4.4.0",
     "lucide-react": "^1.52.0",
     "next": "^16.3.8",
@@ -33,16 +26,14 @@
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.3.3",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.8",
+    "fake-indexeddb": "^6.2.5",
     "postcss": "^8.5.29",
-    "prisma": "^7.10.0",
     "tailwindcss": "^4.3.3",
-    "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   }

@@ -1,27 +1,26 @@
 "use client";
 import Link from "next/link";
 import { useState } from "react";
-import { fmtDate, useApi } from "@/lib/client";
+import { fmtDate, useQuery } from "@/lib/client";
+import { getEmailDetail, listEmails } from "@/lib/import/emails";
+import { listEmployees } from "@/lib/employees/service";
 import { useMonth } from "@/components/month";
 import { Badge, Button, Card, ClassBadge, ConfBadge, EmptyState, ErrorState, Select, Spinner } from "@/components/ui";
 import { EmailActions, ReasonBadges, parseReasons } from "@/components/email-actions";
 import { MONTH_NAMES, REVIEW_REASON_LABELS, type ReviewReason } from "@/lib/types";
-import type { listEmails } from "@/lib/import/emails";
-
-type Result = Awaited<ReturnType<typeof listEmails>>;
 
 export default function ReviewPage() {
   const { year, month, ready } = useMonth();
   const [reason, setReason] = useState("");
   const [page, setPage] = useState(1);
-  const { data, error, loading, reload } = useApi<Result>(ready ? `/api/emails?year=${year}&month=${month}&reviewStatus=NEEDS_REVIEW&pageSize=10&page=${page}&sort=confidence&dir=asc` : null);
-  const emps = useApi<{ employees: { id: string; name: string }[] }>("/api/employees");
+  const { data, error, loading, reload } = useQuery(ready ? `review:${year}:${month}:${page}` : null, () => listEmails({ year, month, reviewStatus: "NEEDS_REVIEW", pageSize: 10, page, sort: "confidence", dir: "asc" }));
+  const emps = useQuery("employees", () => listEmployees());
   const [open, setOpen] = useState<string | null>(null);
   const [body, setBody] = useState<Record<string, string>>({});
 
   async function toggle(id: string) {
     setOpen(open === id ? null : id);
-    if (!body[id]) { const r = await fetch(`/api/emails/${id}`).then((x) => x.json()); setBody((b) => ({ ...b, [id]: r.email?.body ?? "" })); }
+    if (!body[id]) { const r = await getEmailDetail(id); setBody((b) => ({ ...b, [id]: r?.email.body ?? "" })); }
   }
   const rows = data?.rows.filter((r) => !reason || parseReasons(r.reviewReasons).includes(reason as ReviewReason)) ?? [];
   const pages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
@@ -38,18 +37,18 @@ export default function ReviewPage() {
         <Card key={e.id} className="p-4">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0">
-              <Link href={`/emails/${e.id}`} className="font-medium hover:text-blue-700">{e.subject || "(no subject)"}</Link>
+              <Link href={`/email?id=${e.id}`} className="font-medium hover:text-blue-700">{e.subject || "(no subject)"}</Link>
               <p className="text-xs text-slate-500">{e.employee ? e.employee.name : <Badge className="bg-red-50 text-red-700">Unmatched</Badge>} · {e.senderName} {e.senderEmail && `<${e.senderEmail}>`} · {fmtDate(e.sentAt)}</p>
             </div>
             <div className="flex items-center gap-2"><span className="text-xs text-slate-400">Suggested</span><ClassBadge value={e.finalClass} /><ConfBadge value={e.confidence} /></div>
           </div>
           <div className="mt-2"><ReasonBadges json={e.reviewReasons} /></div>
           <p className="mt-2 text-sm text-slate-600">{e.reason}</p>
-          {e.possibleDuplicateOfId && <p className="mt-1 text-xs text-amber-700">Possible duplicate ({e.possibleDuplicateSim}%) — <Link className="underline" href={`/emails/${e.possibleDuplicateOfId}`}>open the other email</Link></p>}
-          {e.duplicateOf && <p className="mt-1 text-xs text-violet-700">Duplicate of <Link className="underline" href={`/emails/${e.duplicateOf.id}`}>{e.duplicateOf.subject}</Link> ({e.duplicateSimilarity}%)</p>}
+          {e.possibleDuplicateOfId && <p className="mt-1 text-xs text-amber-700">Possible duplicate ({e.possibleDuplicateSim}%) — <Link className="underline" href={`/email?id=${e.possibleDuplicateOfId}`}>open the other email</Link></p>}
+          {e.duplicateOf && <p className="mt-1 text-xs text-violet-700">Duplicate of <Link className="underline" href={`/email?id=${e.duplicateOf.id}`}>{e.duplicateOf.subject}</Link> ({e.duplicateSimilarity}%)</p>}
           <button className="mt-2 text-xs text-blue-700 hover:underline" onClick={() => toggle(e.id)}>{open === e.id ? "Hide body" : "Show body"}</button>
           {open === e.id && <pre className="mt-2 max-h-48 overflow-auto rounded bg-slate-50 p-2 text-xs break-words whitespace-pre-wrap">{body[e.id] ?? "Loading…"}</pre>}
-          <div className="mt-3 border-t border-slate-100 pt-3">{emps.data && <EmailActions compact email={e} employees={emps.data.employees} onDone={reload} />}</div>
+          <div className="mt-3 border-t border-slate-100 pt-3">{emps.data && <EmailActions compact email={e} employees={emps.data} onDone={reload} />}</div>
         </Card>
       ))}
       {data && data.total > data.pageSize && (

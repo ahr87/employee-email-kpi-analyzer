@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { DEFAULT_KPI_CONFIG, type KpiConfig } from "../kpi/engine";
 import { DEFAULT_PHRASES, DEFAULT_TEAM_KEYWORDS } from "../classification/phrases";
-import { prisma } from "../database/client";
+import { getDb } from "../db";
 import { logAudit } from "../audit";
 
 const classNum = z.number().min(0).max(1);
@@ -50,10 +50,8 @@ export type AppSettings = z.infer<typeof settingsSchema>;
 const KEY = "app";
 
 export async function getSettings(): Promise<AppSettings> {
-  const row = await prisma.setting.findUnique({ where: { key: KEY } });
-  let stored: unknown = {};
-  try { stored = row ? JSON.parse(row.value) : {}; } catch { stored = {}; }
-  const parsed = settingsSchema.safeParse(stored);
+  const db = await getDb();
+  const parsed = settingsSchema.safeParse(db.settings.get(KEY)?.value ?? {});
   return parsed.success ? parsed.data : settingsSchema.parse({});
 }
 
@@ -63,7 +61,8 @@ export async function saveSettings(patch: unknown): Promise<AppSettings> {
   // changing the order by hand means "not verified against real data yet"
   if (p.dateOrder !== undefined && p.dateOrder !== before.dateOrder && p.dateOrderLearned === undefined) p.dateOrderLearned = false;
   const next = settingsSchema.parse({ ...before, ...p });
-  await prisma.setting.upsert({ where: { key: KEY }, create: { key: KEY, value: JSON.stringify(next) }, update: { value: JSON.stringify(next) } });
+  const db = await getDb();
+  await db.apply([{ table: "settings", put: [{ id: KEY, value: next }] }]);
   const changed = (Object.keys(next) as (keyof AppSettings)[]).filter((k) => JSON.stringify(next[k]) !== JSON.stringify(before[k]));
   if (changed.length) {
     await logAudit("SETTINGS_CHANGED", "Setting", KEY, `Settings changed: ${changed.join(", ")}`, {

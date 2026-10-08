@@ -1,10 +1,11 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { prisma } from "@/lib/database/client";
+import { getDb } from "@/lib/db";
+import { freshDb, q, seedEmployees } from "./db";
 import { importBatch } from "@/lib/import/importer";
 import { monthlyStats } from "@/lib/reports/aggregate";
 import { monthlyXlsx } from "@/lib/reports/excel";
+import { loadExcelJS } from "@/lib/reports/exceljs";
 import { saveSettings } from "@/lib/settings";
-import { resetData } from "@/lib/demo";
 import { buildDemoMonth } from "@/lib/demo/generate";
 
 const demo = buildDemoMonth();
@@ -12,8 +13,8 @@ const log: string[] = [];
 let ms = 0;
 
 beforeAll(async () => {
-  await resetData({ employees: true, settings: true });
-  await prisma.employee.createMany({ data: demo.employees.map(({ employeeId, name, email, department, team }) => ({ employeeId, name, email, department, team })) });
+  await freshDb();
+  await seedEmployees(demo.employees.map(({ employeeId, name, email, department, team }) => ({ employeeId, name, email, department, team })));
   await saveSettings({ nmcAddresses: demo.nmcAddresses.map((address) => ({ address, label: "", enabled: true })) });
 }, 60_000);
 
@@ -34,22 +35,24 @@ describe("full monthly workflow with synthetic data (September 2026)", () => {
       const r = await importBatch({ year: demo.year, month: demo.month, text });
       total += r.newEmails;
       log.push(`batch ${i + 1}: parsed ${r.parsed}, new ${r.newEmails}, dup ${r.exactDuplicates} (quoted ${r.quotedRepeats}), matched ${r.matched}, unmatched ${r.unmatched}, nmc ${r.nmcMessages}, followUps ${r.followUps}, outside ${r.outsideMonth}, auto ${r.autoClassified}, review ${r.needsReview}`);
-      expect(await prisma.email.count()).toBe(total);
+      expect(await q.count()).toBe(total);
     }
-    expect(await prisma.batch.count()).toBe(3);
+    expect((await q.batches()).length).toBe(3);
     for (const text of demo.repastes) {
       const r = await importBatch({ year: demo.year, month: demo.month, text });
       log.push(`re-paste: parsed ${r.parsed}, new ${r.newEmails}, dup ${r.exactDuplicates}`);
       expect(r.newEmails).toBe(0);
     }
-    expect(await prisma.email.count()).toBe(total);
+    expect(await q.count()).toBe(total);
     ms = Date.now() - t0;
   }, 120_000);
 
   it("every email lands in the expected category, with the right employee and original", async () => {
     const wrong: string[] = [];
     for (const t of demo.truth) {
-      const e = await prisma.email.findFirst({ where: { subject: t.subject, kind: { not: "NMC" } }, include: { employee: true, duplicateOf: true } });
+      const db = await getDb();
+      const raw = await q.emails((x) => x.subject === t.subject && x.kind !== "NMC");
+      const e = raw[0] && { ...raw[0], employee: db.employees.get(raw[0].employeeId), duplicateOf: db.emails.get(raw[0].duplicateOfId) };
       if (!e) { wrong.push(`MISSING ${t.subject}`); continue; }
       if (!t.outside && e.counted !== t.counted) wrong.push(`counted ${t.subject}: ${e.counted}`);
       if (e.finalClass !== t.cls) wrong.push(`${t.subject}: expected ${t.cls}, got ${e.finalClass} (${e.reason})`);
@@ -77,11 +80,11 @@ describe("full monthly workflow with synthetic data (September 2026)", () => {
     }
     // follow-up messages and NMC messages are evidence only
     expect(s.nmcMessages).toBeGreaterThan(50);
-    expect(await prisma.email.count({ where: { kind: "FOLLOW_UP" } })).toBeGreaterThanOrEqual(6);
+    expect(await q.count((e) => e.kind === "FOLLOW_UP")).toBeGreaterThanOrEqual(6);
   });
 
   it("review queue holds exactly the uncertain ones", async () => {
-    const need = await prisma.email.findMany({ where: { counted: true, reviewStatus: "NEEDS_REVIEW" }, select: { subject: true, finalClass: true, employeeId: true } });
+    const need = await q.emails((e) => e.counted && e.reviewStatus === "NEEDS_REVIEW");
     const expected = demo.truth.filter((t) => t.counted && (t.cls === "PENDING_REVIEW" || t.unmatched || t.noDate)).length
       + demo.truth.filter((t) => t.outside).length; // outside-month emails are counted=true internally until decided
     expect(need.length).toBe(expected);
@@ -90,8 +93,8 @@ describe("full monthly workflow with synthetic data (September 2026)", () => {
 
   it("exports an Excel workbook with the six management sheets and finishes in reasonable time", async () => {
     const buf = await monthlyXlsx(demo.year, demo.month);
-    expect(buf.subarray(0, 2).toString()).toBe("PK");
-    const ExcelJS = (await import("exceljs")).default;
+    expect([buf[0], buf[1]]).toEqual([0x50, 0x4b]); // "PK" — a real .xlsx (zip) file
+    const ExcelJS = await loadExcelJS();
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buf as unknown as ArrayBuffer);
     expect(wb.worksheets.map((w) => w.name)).toEqual(["Summary", "Employee Details", "Email Details", "Classification Summary", "Review Required", "Employees"]);
