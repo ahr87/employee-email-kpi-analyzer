@@ -1,12 +1,15 @@
 # Employee Email KPI Analyzer
 
-A local web application that turns **emails you copy out of Outlook** into a **monthly employee email KPI report**.
+A web app that turns **emails you copy out of Outlook** into a **monthly employee email KPI report** — and runs **entirely in your browser**.
 
 ```
 Outlook → filter/select emails → Copy → paste here → Analyze → Review → Monthly report → Export Excel
 ```
 
-**There is no Outlook connection of any kind** — no Microsoft Graph, no OAuth, no mailbox access, no polling. You paste text; the app parses and analyzes it on your machine. Nothing is sent to external services, and the app works with no AI.
+- **Live site (after the one-time GitHub Pages setup below):** https://ahr87.github.io/employee-email-kpi-analyzer/
+- **No Outlook connection** of any kind — no Microsoft Graph, no OAuth, no mailbox access. You paste text.
+- **No server, no database server, no accounts.** The site is a set of static files on GitHub Pages. Parsing, classification, duplicate detection, KPI and Excel/CSV generation all run in your browser; your employees and emails are stored in **your browser's IndexedDB** and never uploaded anywhere. The only network access is the initial download of the app itself (and after that it also works offline).
+- Works with no AI and never calls an AI service.
 
 ## What it does
 
@@ -24,29 +27,63 @@ Every automatic result has a **confidence (0–100)** and a **human-readable rea
 
 Email **volume** and email **quality** are kept separate: the KPI score never rewards sending more emails.
 
-## Quick start
+## Using the app (nothing to install)
 
-Requirements: Node.js 20+ (tested on 22) and npm.
+Open https://ahr87.github.io/employee-email-kpi-analyzer/ → follow the seven steps on the first page: add employees → set NMC addresses → select the month → paste Outlook emails → Analyze → review → report.
+Try it first with **Settings → Load synthetic demo data** (fictional people; stored only in your browser).
+
+## Local development
+
+Requirements: Node.js 20+ (tested on 22) and npm. No database, no `.env`, no API keys.
 
 ```bash
-npm install            # installs deps and generates the Prisma client
-cp .env.example .env   # DATABASE_URL="file:./data/app.db"
-npm run db:push        # creates the local SQLite database
-npm run dev            # http://localhost:3000  (listens on 127.0.0.1 only)
+npm install
+npm run dev            # http://localhost:3000   (hot reload, no base path)
+npm run build          # static site -> ./out   (base path /employee-email-kpi-analyzer, like GitHub Pages)
+npm start              # serves ./out at http://127.0.0.1:4173/employee-email-kpi-analyzer/ — the same layout as GitHub Pages
 ```
 
-Production-style run: `npm run build && npm start`.
-
-Try it without real data: open **Settings → Load synthetic demo data** (fictional people, in `sample-data/`).
-
-Other commands:
+Checks:
 
 ```bash
-npm test               # unit + integration tests (Vitest, own throw-away SQLite file)
-npm run build && npm run test:e2e   # Playwright end-to-end flow (uses its own DB on port 3200)
-npm run typecheck && npm run lint
+npm run lint && npm run typecheck
+npm test               # Vitest: parser, classifier, duplicates, KPI, IndexedDB storage, backup/restore, simulation, performance
+npm run test:e2e       # Playwright: builds the site, serves it under the Pages base path, drives the whole workflow
 ```
 If Playwright cannot find a browser, set `PW_CHROMIUM=/path/to/chrome`.
+
+## GitHub Pages deployment
+
+The site is published by `.github/workflows/deploy.yml`:
+
+1. You **push (or merge) to `main`**.
+2. **GitHub Actions** checks out the code, runs `npm ci`, lint, typecheck and the tests, then `npm run build` (Next.js static export into `out/`).
+3. **GitHub Pages** publishes `out/` at **https://ahr87.github.io/employee-email-kpi-analyzer/**.
+
+**One-time setting** (needed once per repository): GitHub → *Settings* → *Pages* → *Build and deployment* → **Source: GitHub Actions**.
+
+Only `main` is deployed. Other branches run `.github/workflows/ci.yml` (lint, typecheck, tests, build) without deploying. Nothing has to be copied by hand after an update.
+
+How the static build works: `next.config.ts` sets `output: "export"`, `basePath`/`assetPrefix` = `/employee-email-kpi-analyzer` (central place: `src/lib/config.ts` + `next.config.ts`), `trailingSlash: true` (every page is its own `…/index.html`, so refreshing any page works on static hosting) and unoptimized images. Detail pages use query strings (`/email/?id=…`, `/employee/?id=…`) because static hosting has no dynamic routes. `scripts/postbuild.mjs` writes the offline cache list. `public/.nojekyll` is included.
+
+## Local data (important)
+
+Everything you enter — employees, pasted emails, classifications, manual decisions, settings, audit log — is stored **in this browser on this device** (IndexedDB), and is still there when you close the browser and open the site later. It is **not** synchronised between browsers or computers.
+
+- **Settings → Local data** shows what is stored (and the storage used), and offers **Export backup**, **Restore backup…** and **Clear all local data**.
+- If you clear the browser's site data, use a different browser/profile/computer, or open a private window, **the data will not be there** unless you restored a backup. Export a backup regularly — it is one JSON file.
+- The app asks the browser to keep its data persistently; browsers may still evict data under extreme storage pressure.
+- Several tabs: when one tab changes the data, other open tabs re-read it and show a "Reload" notice, so a stale tab never overwrites newer data.
+
+### Backup and restore
+
+- **Export backup** downloads `employee-email-kpi-backup-YYYY-MM-DD.json` with employees, batches, emails (including the exact pasted source), classifications, manual overrides, settings (KPI, NMC addresses, phrases, thresholds) and the audit log. No temporary UI state. **It contains your pasted emails — keep it private; never commit it** (`.gitignore` blocks `employee-email-kpi-backup-*.json`).
+- **Restore backup…** validates the file completely first (format, version, field types, links between records). A file that fails validation is rejected with the reasons and **nothing is changed**. A valid file is shown with a summary and only replaces the current data after you confirm.
+- **Clear all local data** requires typing `DELETE` and states clearly: *this deletes all employee, email, KPI and analysis data stored in this browser*.
+
+### Offline
+
+After the first visit a service worker caches the app (pages and scripts), so it opens and works without internet: analyze pasted emails, review, KPI, search, filter, Excel/CSV export and backups all run locally. A new deployment is picked up the next time you are online.
 
 ## Daily workflow
 
@@ -61,48 +98,43 @@ Every paste is a **batch**; batches are strictly additive and attached to the se
 ## Architecture
 
 ```
-src/
-  app/                 Next.js App Router: pages + /api route handlers (thin)
-  components/          UI kit (shadcn-style, Tailwind), charts (Recharts), shell
-  lib/
-    parser/            paste → ParsedEmail[] (boundaries, headers, dates, HTML→text)
-    classification/    entities, phrases, EmailClassifier interface + rule-based impl
-    duplicate-detection/  DuplicateDetector interface + rule-based impl, similarity
-    kpi/               pure KPI engine (counts + config → score) — independent of analysis
-    import/            importer (batches, exact-dedupe), analyze (pipeline), emails (queries/actions)
-    reports/           aggregation, CSV, Excel (exceljs)
-    employees/         matching, CRUD service, CSV/Excel import/export
-    settings/          zod-validated settings stored in SQLite
-    audit/             audit log
-    database/          Prisma client (better-sqlite3 adapter)
-prisma/schema.prisma   data model
-sample-data/employees.csv  example employee import file (fictional); src/lib/demo = synthetic month generator
-tests/  e2e/           Vitest and Playwright
+Browser ── static files from GitHub Pages (HTML/JS/CSS) ──► React UI (Next.js static export)
+   │
+   ├─ UI (src/app, src/components)           pages, tables, charts, dialogs
+   ├─ Business logic (src/lib/…, no I/O)     parser · classification · duplicate-detection · kpi · employees/matching
+   ├─ Import & analysis (src/lib/import)     batches, exact-duplicate prevention, conversation model, review reasons
+   ├─ Reports (src/lib/reports)              aggregation, CSV, Excel (ExcelJS, loaded on demand)
+   ├─ Backup (src/lib/backup)                export / validate / restore
+   └─ Storage (src/lib/storage, src/lib/db)  StorageAdapter  →  IndexedDbAdapter (production)  /  MemoryAdapter (tests, fallback)
 ```
 
-Stack: Next.js 16 (React 19, TypeScript), Tailwind CSS 4, Prisma 7 + SQLite (`better-sqlite3`), Zod, Recharts, ExcelJS, Vitest, Playwright.
+```
+src/
+  app/            Next.js pages (static export): dashboard, import, emails, email/?id=, review, employees, employee/?id=, reports, settings
+  components/     UI kit, charts, review actions, local-data card, shell
+  lib/
+    storage/      storage.ts (StorageAdapter interface, MemoryAdapter) · indexeddb.ts (IndexedDbAdapter) · types.ts (record shapes)
+    db/           in-memory working copy of the stored tables, atomic write-through, cross-tab refresh
+    parser/ classification/ duplicate-detection/ kpi/ employees/   the engines (unchanged by the move to the browser)
+    import/       importer, analyze (conversation model + classification), emails (queries/manual actions), batches
+    reports/      aggregate, excel, csv, export (download)
+    backup/ data-management/ settings/ audit/ demo/ utils/ config.ts
+  scripts/        serve-static.mjs (Pages-like local server), postbuild.mjs (offline manifest)
+tests/ e2e/       Vitest and Playwright
+```
 
-### Pipeline
+**Business logic never touches IndexedDB directly** — it talks to `getDb()`; swapping the storage means writing another `StorageAdapter`. All writes go to storage first, in one transaction per operation (e.g. a batch and its emails are stored together or not at all), and only then to the in-memory copy that queries run on.
 
-`paste → parse → exact-duplicate check → employee match → month check → store (batch) → analyzeMonth → review queue`
+### Data model
 
-`analyzeMonth` re-derives employee match, business duplicates and classification for the month. It runs after each import (so a later batch can supply the original/evidence for earlier emails) and on demand (Settings → Re-analyze). **Manual decisions are never touched** unless you pick *Re-analyze + reset manual decisions*.
-
-### Data model (Prisma)
-
-- **Employee** – employeeId, name, email (unique, lower-case), department, team, active, timestamps.
-- **Batch** – number, year/month, totals (parsed, new, exact duplicates, matched, unmatched, auto-classified, needs review), warnings, status.
-- **Email** – parsed fields (sender, to, cc, subject, `sentAt`, body, `rawSource`, messageId, uncertain fields), extracted entities (incident/service/circuit IDs, locations), `role` (EMPLOYEE | NMC), month handling (`outsideMonth`, `monthDecision`), employee link (+ `employeeManual`), classification (`autoClass`, `confidence`, `reason`, `finalClass`, `isManual`, `overrideReason`, `overrideAt`), duplicate links (`duplicateOfId`, similarity, `possibleDuplicateOfId`), review (`reviewStatus`, `reviewReasons`), `contentHash` (unique → exact-duplicate prevention).
-- **AuditLog**, **Setting** (JSON).
+Tables (object stores): `employees`, `batches`, `emails`, `audit`, `settings` — fields are listed in `src/lib/storage/types.ts`. Each email stores the parsed fields, the exact pasted source (`rawSource`), extracted entities, classification (`autoClass`, `confidence`, `reason`, `finalClass`, `isManual`, `overrideReason`), duplicate links, review status/reasons, and identity hashes (`contentHash`, `looseHash`) used for exact-duplicate prevention.
 
 ### Key decisions
 
-- **SQLite + Prisma driver adapter**: zero infrastructure; one file you can back up or delete.
-- **Dates** are wall-clock values stored as UTC (no time-zone conversion), so the month never shifts. Numeric dates (`03/04/2026`) use the order set in Settings (default day/month/year; unambiguous when a part > 12).
-- **Evidence model**: the app never sees Outlook's *Sent Items/forward state*; it classifies from what you paste. Forward/no-action evidence comes from NMC messages in the same conversation (same subject ignoring `RE:`/`FW:`). If you paste only employee emails with no NMC replies, results will correctly be *Pending Review* rather than guessed.
-- **Out-of-month emails** are kept, flagged, and *not counted* until you Include them; Exclude keeps them stored but ignored.
-- **Unmatched senders** are counted in the totals but in no employee row, and appear in Review.
-- **PDF**: via the browser's Print dialog (print stylesheet), Excel/CSV are first-class.
+- **IndexedDB + in-memory working set**: thousands of emails fit comfortably in memory (2,000 emails import, analyze and back up in about a second in tests); queries are plain functions over arrays.
+- **Dates** are wall-clock values stored as UTC (no time-zone conversion), so the month never shifts.
+- **Static export** (no SSR, no API routes, no server actions): every former `/api/...` call is now a direct function call into the local data layer.
+- **PDF**: via the browser's Print dialog (print stylesheet), Excel/CSV are generated in the browser.
 
 ## Parsing (copy/paste from Outlook)
 
@@ -157,12 +189,11 @@ Review reasons: unmatched employee, missing date, ambiguous date, outside month,
 
 ## Privacy & security
 
-- **Local only.** No external calls, no telemetry. The server listens on **127.0.0.1 only** (`npm run dev` / `npm start`), so other computers on your network cannot reach it. Use `http://localhost:3000`.
-- **Protection against other websites**: the API rejects requests whose `Host` is not a local name (DNS-rebinding) and state-changing requests from another origin, so a web page you visit cannot reset or delete your data. To deliberately serve another host name, set `ALLOWED_HOSTS=name1,name2` — there is still no login, so do not expose it on a network.
-- **Nothing sensitive in Git**: `.env`, `*.db` and `data/` are git-ignored; only synthetic data is committed (`src/lib/demo`, `tests`, `sample-data/employees.csv`). Real emails live only in `data/app.db` on your machine — back it up or delete it like any file.
-- **Settings → Data**: delete one month, reset all email data, or reset everything (typed confirmation).
-- **Safe rendering**: email text is always displayed as escaped text (no `innerHTML`), HTML pastes are converted to text, a Content-Security-Policy blocks scripts/resources from other origins, framing is denied. Excel cells never contain formulas from email text; CSV cells starting with `= + - @` are neutralised.
-- Inputs validated with Zod, parameterised queries (Prisma), uploads limited to `.csv/.xlsx`.
+- **Your data stays on your device.** There is no backend. The app makes no network requests other than loading its own static files; the Content-Security-Policy (set as a `<meta>` tag, since static hosting cannot send headers) allows only same-origin resources. The end-to-end test asserts that no request other than the app's own files is ever made.
+- **Nothing sensitive in Git**: `.env`, `*.db`, `data/` and `employee-email-kpi-backup-*.json` are git-ignored; only synthetic data is committed (`src/lib/demo`, `tests`, `sample-data/employees.csv`).
+- **Safe rendering**: email text is always displayed as escaped text (no `innerHTML`), HTML pastes are converted to text first, scripts are never executed, no remote resources are loaded. Excel cells never contain formulas from email text; CSV cells starting with `= + - @` are neutralised.
+- **Validation**: pasted emails are parsed defensively; employee imports (CSV/Excel, ≤ 10 MB) and backup files are validated field by field before anything is stored.
+- Data is not encrypted at rest (like any browser data): anyone who can use your browser profile can read it. Use a private computer/profile.
 
 ## Future AI support
 
@@ -172,32 +203,54 @@ Review reasons: unmatched employee, missing date, ambiguous date, outside month,
 
 | Problem | Fix |
 |---|---|
-| "Nothing to analyze" | The paste box was empty. |
-| Everything is *Unmatched* | Add/import employees whose e-mail equals the sender address, then *Re-analyze month*. |
-| Everything is *Pending Review* | No NMC replies/forwards were pasted, or the NMC address isn't in Settings → NMC addresses. |
-| Dates land in the wrong month | Check *Numeric date order* in Settings. |
-| `Cannot find module generated/prisma` | `npx prisma generate` (runs on `npm install`). |
-| Database errors | Ensure `DATABASE_URL` is a `file:` path that is writable; run `npm run db:push`. |
-| Start over | Settings → Reset, or delete `data/app.db` and run `npm run db:push`. |
+| The page is empty / "Welcome" screen again | The browser data was cleared or you are in another browser/profile — use **Settings → Restore backup…** |
+| Red banner "Local storage could not be opened" | The browser blocks IndexedDB (private window?). Use a normal window; until then data is kept only in memory — export a backup before closing |
+| "Nothing to analyze" | The paste box was empty |
+| Everything is *Unmatched* | Add/import employees whose e-mail equals the sender address, then Settings → *Re-analyze month* |
+| Everything is *Pending Review* | No NMC replies/forwards were pasted, or the NMC address is not in Settings → NMC addresses |
+| Dates land in the wrong month | Check *Numeric date order* in Settings |
+| "The browser storage is full" | Export a backup, delete old months in Settings, or free disk space |
+| 404 on GitHub Pages | Settings → Pages → Source must be **GitHub Actions**, and the workflow must have run on `main` |
+| Old version after an update | Reload once while online (the service worker refreshes on the next visit) |
 
 ## Testing
 
 ```bash
-npm test               # 70+ unit/integration tests (parser on Outlook-style text, classifier, duplicates, KPI, import cases, 100+-email month, 2,500-email performance)
-npm run build && npm run test:e2e   # Playwright: select month → paste → analyze → classification & employee totals → exact duplicate → multiple batches → review → report → Excel export (+ XSS check, NMC address settings)
-npm run typecheck && npm run lint
+npm test               # 110+ tests: Outlook-style parsing, classifier, duplicates, KPI, IndexedDB persistence & atomicity,
+                       # backup/restore/validation, data reset, 100+-email month simulation, 2,500-email performance,
+                       # "no server code" architecture guard
+npm run test:e2e       # Playwright against the static build served under /employee-email-kpi-analyzer/
 ```
-The month simulation (`src/lib/demo/generate.ts`) generates 12 employees and 100+ synthetic emails (forwarded, not useful, duplicates, pending, unmatched, Arabic, mixed, out-of-month, undated, follow-ups) in three batches plus repeated pastes, and compares every result with the ground truth. **Settings → Load synthetic demo data** loads the same month.
+The e2e test covers: first-run page → add employees → NMC address → select September 2026 → paste Outlook-style text → analyze → classifications and employee totals → exact duplicate ignored → second batch accumulates → manual override changes the KPI → Excel/CSV export (sheet names verified) → backup export → clear all data → restore → data and override are back → reopen/refresh a deep link → offline use. The month simulation (`src/lib/demo/generate.ts`) compares every result with ground truth.
+
+## Feature parity: server version → static version
+
+| Feature | Static (GitHub Pages) version |
+|---|---|
+| Paste & Analyze, batches, month selection, import summary | ✅ same (local functions instead of API) |
+| Parser (Outlook headers, chains, Arabic, HTML sanitising) | ✅ unchanged |
+| Employee matching, NMC addresses (add/edit/delete/enable) | ✅ unchanged |
+| Conversation model, evidence-based classification, editable phrases | ✅ unchanged |
+| Duplicate detection (tiers, original by timestamp), exact-duplicate prevention | ✅ unchanged (SHA-256 now computed in the browser) |
+| Review queue, one-click classification, duplicate original picker, manual overrides protected from re-analysis | ✅ unchanged |
+| Dashboard, employee page, emails list (search/filter/sort/paginate), email detail | ✅ unchanged (detail pages use `?id=`) |
+| KPI engine & settings, trends/charts | ✅ unchanged |
+| Reports, Excel (6 sheets) & CSV export, Print/PDF | ✅ generated in the browser |
+| Employee CSV/Excel import & export | ✅ in the browser |
+| Settings, audit log, re-analysis, delete month, delete emails | ✅ unchanged |
+| Synthetic demo data | ✅ loads into IndexedDB |
+| SQLite database file on disk | ➜ replaced by IndexedDB in the browser (+ **new**: backup / restore JSON, storage usage, clear all local data) |
+| Server-side Host/Origin request guard, `127.0.0.1` binding | ➖ not needed: there is no server or API; the CSP meta tag replaces the security headers |
+| **New**: first-run guide, offline use (service worker), cross-tab refresh | ✅ |
 
 ## Limitations
 
-- **Validated only against synthetic Outlook-style text.** No real Outlook sample has been tested. Layouts I have not seen (e.g. the Outlook *reading-pane* header with no `From:` label, localized labels other than English/Arabic, signatures with `From:` lines) may need parser tweaks — see below.
-- Classification depends on the evidence you paste (NMC replies/forwards) and on the phrase lists; unusual wording shows up as Pending Review rather than a guess.
-- Location extraction is heuristic (named places in the subject, “at/in X”, “site X”, Arabic “في X”); shared incident/circuit/service/device/IP evidence is much more reliable.
-- A follow-up written by a *different* employee inside someone else's conversation is treated as a follow-up (not counted). NMC/department messages count as evidence for 14 days after the employee's email; when several emails share one subject and the NMC message does not name the employee, the result is sent to Review.
-- An employee with a second e-mail address appears as *Unmatched*; assign the email manually or change the address in Employees (one address per employee).
-- If NMC replies use a different subject than the employee's email, they are not linked (the email stays Pending Review — never guessed).
-- Single-user, no authentication; PDF export uses the browser's print dialog. Old Phase 1 databases should be recreated (`npm run db:push` after deleting `data/app.db`) because the identity key and columns changed.
+- **Validated only against synthetic Outlook-style text.** No real Outlook sample has been tested. Layouts I have not seen (e.g. the Outlook *reading-pane* header with no `From:` label, other display languages) may need parser tweaks.
+- Data lives in one browser on one device: no sync, no multi-user use, no login. Back up regularly.
+- Classification depends on the evidence you paste (NMC replies/forwards) and on the phrase lists; unusual wording shows up as Pending Review rather than a guess. If NMC replies use a different subject than the employee's email they are not linked.
+- One e-mail address per employee; location extraction is heuristic (shared incident/circuit/service/device/IP evidence is far more reliable).
+- A follow-up written by a different employee inside someone else's conversation is not counted.
+- PDF export uses the browser's print dialog. Very large amounts of data (hundreds of thousands of emails) are not a target — the working set is held in memory.
 
 ## Real samples that would help most
 
